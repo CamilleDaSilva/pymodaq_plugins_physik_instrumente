@@ -75,7 +75,7 @@ class Keithley2410:
         response = self.instrument.query(':SOUR:VOLT:LEV?')
         return float(response.strip())
 
-    def get_current(self) -> float:
+    def read_current(self) -> float:
         """Lit le courant mesuré par le Keithley.
 
         Returns
