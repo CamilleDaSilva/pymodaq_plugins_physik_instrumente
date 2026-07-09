@@ -47,6 +47,7 @@ class Keithley2410:
         volts = np.linspace(voltMin, voltMax, NV)
         voltRang = abs(voltMin) + abs(voltMax)
         self.instrument.write('*rst')
+        self.instrument.write(':SYST:BEEP:STAT OFF')
         self.instrument.write(f':SENS:CURR:PROT {compliance}')
         self.instrument.write(':SOUR:FUNC VOLT')
         self.instrument.write(':SOUR:VOLT:MODE FIX')
