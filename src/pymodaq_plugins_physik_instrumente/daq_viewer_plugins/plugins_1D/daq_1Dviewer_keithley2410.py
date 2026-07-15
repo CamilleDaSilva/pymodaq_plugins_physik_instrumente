@@ -85,12 +85,25 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             {'title': 'Vmax ionic regression (V):', 'name': 'vmax_regression', 'type': 'float',
              'value': -5.0, 'max': 0.0,
              'tip': 'Max voltage for the linear regression of the ionic branch [V]'},
-            {'title': 'I0 (mA):', 'name': 'i0_result', 'type': 'float',
+            {'title': 'Vmin electron saturation (V):', 'name': 'vmin_saturation', 'type': 'float',
+             'value': 15.0, 'min': 0.0,
+             'tip': 'Min voltage above which the curve is considered in the electron '
+                    'saturation branch [V]'},
+            {'title': 'Isat electron (mA):', 'name': 'isat_electron_result', 'type': 'float',
              'value': 0.0, 'readonly': True,
-             'tip': 'Calculated ionic current I0 [mA]'},
-            {'title': 'J (mA/cm²):', 'name': 'j_result', 'type': 'float',
+             'tip': 'Calculated electron saturation current Isat [mA]'},
+            {'title': 'V intersection (V):', 'name': 'v_intersection_result', 'type': 'float',
              'value': 0.0, 'readonly': True,
-             'tip': 'Calculated ionic current density J [mA/cm²]'},
+             'tip': 'Voltage at the intersection between the ionic branch regression '
+                    'and the transition branch regression [V]'},
+            {'title': 'I intersection (mA):', 'name': 'i_intersection_result', 'type': 'float',
+             'value': 0.0, 'readonly': True,
+             'tip': 'Current at the intersection between the ionic branch regression '
+                    'and the transition branch regression [mA]'},
+            {'title': 'Vf floating potential (V):', 'name': 'vf_result', 'type': 'float',
+             'value': 0.0, 'readonly': True,
+             'tip': 'Floating potential Vf, i.e. the voltage at which the collected '
+                    'current crosses zero [V]'},
         ]},
     ]
 
@@ -99,6 +112,7 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         self.x_axis = None
         self._last_volts = None
         self._last_courants = None
+        self.lcd_init = False
 
     def commit_settings(self, param: Parameter):
         """Apply parameter changes from the interface."""
@@ -113,10 +127,10 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             self.controller.instrument.write(f':SOUR:VOLT:RANG {param.value()}')
         elif param.name() == 'run_regression' and param.value():
             self.run_langmuir_regression()
-            self.settings.child('postproc_settings', 'run_regression').setValue(False)
+            self.settings.child('keithley_settings', 'run_regression').setValue(False)
         elif param.name() == 'export_data' and param.value():
             self.export_csv_data()
-            self.settings.child('postproc_settings', 'export_data').setValue(False)
+            self.settings.child('keithley_settings', 'export_data').setValue(False)
 
     def ini_detector(self, controller=None):
         """Initialize communication with the Keithley 2410."""
@@ -126,9 +140,6 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         else:
             self.controller = controller
             initialized = True
-
-        # Connect action buttons
-        
 
         volts = self.controller.init_balayage(
             voltMin=self.settings['scan_settings', 'volt_min'],
@@ -149,6 +160,12 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
                 axes=[self.x_axis]
             )]
         ))
+
+        if not self.lcd_init:
+            self.emit_status(ThreadCommand('init_lcd', dict(
+                labels=['Vf (V)', 'I intersection (mA)'], Nvals=2, digits=4)))
+            self.lcd_init = True
+        self.emit_status(ThreadCommand('lcd', [np.array([0.0]), np.array([0.0])]))
 
         info = f"Keithley 2410 connected on {self.settings['keithley_settings', 'visa_address']}"
         return info, initialized
@@ -209,57 +226,227 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
 
         self.emit_status(ThreadCommand('Update_Status',
                                        [f'CSV exported: {filepath}']))
- 
+
     def run_langmuir_regression(self):
-        """Linear regression on the ionic branch of the I-V curve."""
+        """Compute both the ionic branch regression (I0, J) and the electron
+        saturation branch (Isat) of the I-V curve."""
         print("run_langmuir_regression called")
-        print(f"last_volts: {self._last_volts}")  
+        print(f"last_volts: {self._last_volts}")
         print(f"last_courants: {self._last_courants}")
         if self._last_volts is None or self._last_courants is None:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['No data available. Please run a Grab first.']))
             return
 
-        vmax = self.settings['postproc_settings', 'vmax_regression']
         S = self.settings['langmuir_settings', 'surface_sonde']
 
-        MV_ = []
-        MI_ = []
+        # ── Ionic branch: linear regression below Vmax ──────────────────────
+        vmax = self.settings['postproc_settings', 'vmax_regression']
+        MV_ion = []
+        MI_ion = []
         for v, i in zip(self._last_volts, self._last_courants):
             if v < vmax:
-                MV_.append(v)
-                MI_.append(i)
+                MV_ion.append(v)
+                MI_ion.append(i)
         print(f"vmax: {vmax}")
-        print(f"MV_: {MV_}")
-        print(f"MI_: {MI_}")
-        if len(MV_) < 2:
+        print(f"MV_ion: {MV_ion}")
+        print(f"MI_ion: {MI_ion}")
+
+        I0_mA = None
+        J = None
+
+        if len(MV_ion) < 2:
             self.emit_status(ThreadCommand('Update_Status',
-                                           ['Not enough points for regression. '
+                                           ['Not enough points for ionic regression. '
                                             'Adjust Vmax ionic regression.']))
+        else:
+            try:
+                MV_sm = sm.add_constant(MV_ion)
+                lr = sm.OLS(MI_ion, MV_sm).fit()
+                Constante = lr.params[0]
+                Pente = lr.params[1] if len(lr.params) > 1 else 0.0
+                print(f"Constante (ionic): {Constante}, Pente: {Pente}")
+
+                I0_mA = Constante * 1e3
+                J = Constante / S * 1e3
+                print(f"I0_mA (interne, pour la droite): {I0_mA}, J: {J}")
+            except Exception as e:
+                print(f"ERREUR regression ionique: {e}")
+
+        # ── Electron saturation branch: mean current above Vmin ────────────
+        vmin_sat = self.settings['postproc_settings', 'vmin_saturation']
+        MI_sat = []
+        for v, i in zip(self._last_volts, self._last_courants):
+            if v > vmin_sat:
+                MI_sat.append(i)
+        print(f"vmin_sat: {vmin_sat}")
+        print(f"MI_sat: {MI_sat}")
+
+        Isat_mA = None
+      
+
+        if len(MI_sat) < 1:
+            self.emit_status(ThreadCommand('Update_Status',
+                                           ['Not enough points for electron saturation. '
+                                            'Adjust Vmin electron saturation.']))
+        else:
+            try:
+                Isat = float(np.mean(MI_sat))
+                print(f"Isat (electron): {Isat}")
+
+                Isat_mA = Isat * 1e3
+               
+
+                self.settings.child('postproc_settings', 'isat_electron_result').setValue(round(Isat_mA, 4))
+                
+                print("saturation setValue OK")
+            except Exception as e:
+                print(f"ERREUR saturation electron: {e}")
+
+        # ── Transition branch: linear regression between the ionic branch ──
+        # ── and the electron saturation branch (the steep/near-vertical part) ──
+        MV_trans = []
+        MI_trans = []
+        for v, i in zip(self._last_volts, self._last_courants):
+            if vmax <= v <= vmin_sat:
+                MV_trans.append(v)
+                MI_trans.append(i)
+        print(f"MV_trans: {MV_trans}")
+        print(f"MI_trans: {MI_trans}")
+
+        Vx = None
+        Ix_mA = None
+        Pente_trans = None
+        Intercept_trans = None
+
+        if len(MV_trans) < 2:
+            self.emit_status(ThreadCommand('Update_Status',
+                                           ['Not enough points for transition branch regression. '
+                                            'Adjust Vmax ionic regression / Vmin electron '
+                                            'saturation.']))
+        elif I0_mA is None:
+            self.emit_status(ThreadCommand('Update_Status',
+                                           ['Ionic regression missing: cannot compute the '
+                                            'intersection point.']))
+        else:
+            try:
+                MV_trans_sm = sm.add_constant(MV_trans)
+                lr_trans = sm.OLS(MI_trans, MV_trans_sm).fit()
+                Intercept_trans = lr_trans.params[0]
+                Pente_trans = lr_trans.params[1] if len(lr_trans.params) > 1 else 0.0
+                print(f"Intercept_trans: {Intercept_trans}, Pente_trans: {Pente_trans}")
+
+                if Pente == Pente_trans:
+                    self.emit_status(ThreadCommand('Update_Status',
+                                                   ['Ionic and transition branches have the same '
+                                                    'slope: no intersection point.']))
+                else:
+                    # Intersection des deux droites : Constante + Pente*V = Intercept_trans + Pente_trans*V
+                    Vx = (Intercept_trans - Constante) / (Pente - Pente_trans)
+                    Ix = Constante + Pente * Vx
+                    Ix_mA = Ix * 1e3
+                    print(f"Vx: {Vx}, Ix_mA: {Ix_mA}")
+
+                    self.settings.child('postproc_settings', 'v_intersection_result').setValue(round(Vx, 4))
+                    self.settings.child('postproc_settings', 'i_intersection_result').setValue(round(Ix_mA, 4))
+                    print("intersection setValue OK")
+            except Exception as e:
+                print(f"ERREUR regression transition/intersection: {e}")
+
+        # ── Floating potential: voltage where the current crosses zero ─────
+        Vf = None
+        volts_arr = self._last_volts
+        courants_arr = self._last_courants
+
+        # On cherche deux points de mesure consécutifs qui encadrent I=0
+        # (la courbe passe d'un courant négatif à positif, ou inversement).
+        for k in range(len(volts_arr) - 1):
+            i1, i2 = courants_arr[k], courants_arr[k + 1]
+            v1, v2 = volts_arr[k], volts_arr[k + 1]
+            if i1 == 0:
+                Vf = v1
+                break
+            if (i1 < 0 < i2) or (i2 < 0 < i1):
+                # interpolation linéaire entre (v1, i1) et (v2, i2)
+                Vf = v1 + (0 - i1) * (v2 - v1) / (i2 - i1)
+                break
+
+        print(f"Vf: {Vf}")
+
+        if Vf is None:
+            self.emit_status(ThreadCommand('Update_Status',
+                                           ['Could not determine floating potential Vf: '
+                                            'the curve never crosses zero current.']))
+        else:
+            try:
+                self.settings.child('postproc_settings', 'vf_result').setValue(round(Vf, 4))
+                print("Vf setValue OK")
+            except Exception as e:
+                print(f"ERREUR setValue Vf: {e}")
+                Vf = None
+
+        # ── Overlay on the plot: raw curve + both regression lines + ────────
+        # ── the intersection point, all in the SAME panel ───────────────────
+        volts_full = np.array(self._last_volts)
+        courants_full = np.array(self._last_courants)
+        plot_data = [courants_full]
+        plot_labels = ['Current [A]']
+
+        if I0_mA is not None:
+            ionic_line = Constante + Pente * volts_full
+            plot_data.append(ionic_line)
+            plot_labels.append('Ionic regression')
+
+        if Pente_trans is not None:
+            trans_line = Intercept_trans + Pente_trans * volts_full
+            plot_data.append(trans_line)
+            plot_labels.append('Transition regression')
+
+        if Vx is not None:
+            # Le point d'intersection ne tombe généralement pas exactement
+            # sur un point de mesure existant : on le place au point de la
+            # grille de tension le plus proche pour qu'il partage le même
+            # axe (et donc le même panneau) que les autres courbes. Sa
+            # valeur exacte (Vx, Ix) reste affichée dans les résultats
+            # numériques ci-dessus.
+            idx_x = int(np.argmin(np.abs(volts_full - Vx)))
+            intersection_marker = np.full_like(volts_full, np.nan, dtype=float)
+            intersection_marker[idx_x] = Ix_mA / 1e3
+            plot_data.append(intersection_marker)
+            plot_labels.append('Intersection point')
+
+        data_to_send = [
+            DataFromPlugins(
+                name='I-V Curve',
+                data=plot_data,
+                dim='Data1D',
+                labels=plot_labels,
+                axes=[self.x_axis]
+            ),
+        ]
+
+        self.dte_signal.emit(DataToExport(name='Keithley2410', data=data_to_send))
+        print("plot overlay emitted")
+
+        # ── Update the compact LCD readout with Vf and I intersection ───────
+        self.emit_status(ThreadCommand('lcd', [
+            np.array([Vf if Vf is not None else 0.0]),
+            np.array([Ix_mA if Ix_mA is not None else 0.0]),
+        ]))
+
+        if Isat_mA is None and Vf is None and Vx is None:
             return
 
-        try:
-            MV_sm = sm.add_constant(MV_)
-            lr = sm.OLS(MI_, MV_sm).fit()
-            Constante = lr.params[0]
-            print(f"Constante: {Constante}")
-        except Exception as e:
-            print(f"ERREUR regression: {e}")
-            return
-        I0_mA = Constante * 1e3
-        J = Constante / S * 1e3
-        print(f"I0_mA: {I0_mA}, J: {J}")
-
-        try:
-            self.settings.child('postproc_settings', 'i0_result').setValue(round(I0_mA, 4))
-            self.settings.child('postproc_settings', 'j_result').setValue(round(J, 4))
-            print("setValue OK")
-        except Exception as e:
-            print(f"ERREUR setValue: {e}")
+        status_parts = []
+        if Isat_mA is not None:
+            status_parts.append(f'Isat = {Isat_mA:.3f} mA')
+        if Vf is not None:
+            status_parts.append(f'Vf = {Vf:.3f} V')
+        if Vx is not None:
+            status_parts.append(f'Intersection at V = {Vx:.3f} V, I = {Ix_mA:.3f} mA')
 
         self.emit_status(ThreadCommand('Update_Status',
-                                       [f'Regression OK — I0 = {I0_mA:.3f} mA, '
-                                        f'J = {J:.3f} mA/cm²']))
+                                       ['Regression OK — ' + ', '.join(status_parts)]))
 
     def stop(self):
         """Stop acquisition and turn off output."""
