@@ -28,7 +28,7 @@ class Keithley2410:
         self.instrument.timeout = 5000
         self.instrument.read_termination = '\n'
 
-    def init_balayage(self, voltMin: float, voltMax: float, NV: int,
+    def init_scan(self, voltMin: float, voltMax: float, NV: int,
                       compliance: float = 700e-3, current_range: float = 20e-3):
         """Initialize the Keithley for a voltage sweep with current measurement.
 
