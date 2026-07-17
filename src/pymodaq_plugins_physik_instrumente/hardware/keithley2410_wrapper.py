@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Wrapper Python pour le Keithley 2410 (sourcemètre).
-Gère la communication bas niveau via pyvisa (GPIB).
+Python wrapper for the Keithley 2410 (sourcemeter).
+Handles low-level communication via pyvisa (GPIB).
 
-Ce fichier est destiné à être placé dans le dossier hardware/ du plugin PyMoDAQ.
-Il peut aussi être utilisé de manière autonome dans les scripts Langmuir.
+This file is meant to be placed in the hardware/ folder of the PyMoDAQ plugin.
+It can also be used standalone in Langmuir scripts.
 """
 
 import numpy as np
@@ -14,15 +14,15 @@ import pyvisa
 class Keithley2410:
 
     def __init__(self, adresse: str):
-        """Connexion au Keithley 2410 via GPIB.
+        """Connect to the Keithley 2410 via GPIB.
 
         Parameters
         ----------
         adresse : str
-            Adresse VISA de l'instrument, ex: 'GPIB0::24::INSTR'
+            VISA address of the instrument, e.g. 'GPIB0::24::INSTR'
         """
         rm = pyvisa.ResourceManager()
-        print("Appareils connectés :")
+        print("Connected devices:")
         [print('\t ->', element) for element in rm.list_resources()]
         self.instrument = rm.open_resource(adresse)
         self.instrument.timeout = 5000
@@ -30,19 +30,19 @@ class Keithley2410:
 
     def init_balayage(self, voltMin: float, voltMax: float, NV: int,
                       compliance: float = 700e-3, current_range: float = 20e-3):
-        """Initialise le Keithley pour un balayage en tension avec mesure de courant.
+        """Initialize the Keithley for a voltage sweep with current measurement.
 
         Parameters
         ----------
-        voltMin : float - tension minimale du balayage [V]
-        voltMax : float - tension maximale du balayage [V]
-        NV : int - nombre de points de mesure
-        compliance : float - limite de courant [A] (défaut 700 mA)
-        current_range : float - plage de mesure du courant [A] (défaut 20 mA)
+        voltMin : float - minimum sweep voltage [V]
+        voltMax : float - maximum sweep voltage [V]
+        NV : int - number of measurement points
+        compliance : float - current limit [A] (default 700 mA)
+        current_range : float - current measurement range [A] (default 20 mA)
 
         Returns
         -------
-        volts : array - liste des tensions de mesure
+        volts : array - list of measurement voltages
         """
         volts = np.linspace(voltMin, voltMax, NV)
         voltRang = abs(voltMin) + abs(voltMax)
@@ -57,46 +57,46 @@ class Keithley2410:
         return volts
 
     def set_voltage(self, volt: float):
-        """Applique une tension sur la sortie du Keithley.
+        """Apply a voltage on the Keithley output.
 
         Parameters
         ----------
-        volt : float - tension à appliquer [V]
+        volt : float - voltage to apply [V]
         """
         self.instrument.write(':OUTP ON')
         self.instrument.write(f':SOUR:VOLT:LEV {volt}')
 
     def get_voltage(self) -> float:
-        """Lit la tension actuellement sourcée.
+        """Read the voltage currently being sourced.
 
         Returns
         -------
-        float - tension sourcée [V]
+        float - sourced voltage [V]
         """
         response = self.instrument.query(':SOUR:VOLT:LEV?')
         return float(response.strip())
 
     def read_current(self) -> float:
-        """Lit le courant mesuré par le Keithley.
+        """Read the current measured by the Keithley.
 
         Returns
         -------
-        float - courant mesuré [A]
+        float - measured current [A]
         """
         response = self.instrument.query('READ?')
         values = response.split(',')
         return float(values[1])
 
     def measure(self, volt: float) -> tuple:
-        """Applique une tension et retourne (tension, courant) mesurés.
+        """Apply a voltage and return the measured (voltage, current).
 
         Parameters
         ----------
-        volt : float - tension à appliquer [V]
+        volt : float - voltage to apply [V]
 
         Returns
         -------
-        tuple : (tension [V], courant [A])
+        tuple : (voltage [V], current [A])
         """
         self.set_voltage(volt)
         response = self.instrument.query('READ?')
@@ -104,10 +104,10 @@ class Keithley2410:
         return float(values[0]), float(values[1])
 
     def output_off(self):
-        """Éteint la sortie du Keithley."""
+        """Turn off the Keithley output."""
         self.instrument.write(':OUTP OFF')
 
     def close(self):
-        """Éteint la sortie et ferme la connexion."""
+        """Turn off the output and close the connection."""
         self.output_off()
         self.instrument.close()

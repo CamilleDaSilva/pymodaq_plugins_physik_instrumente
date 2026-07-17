@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Plugin PyMoDAQ pour le Keithley 2410 (sourcemètre).
-Permet de sourcer une tension et de lire le courant mesuré en retour.
+PyMoDAQ plugin for the Keithley 2410 (sourcemeter).
+Allows sourcing a voltage and reading back the measured current.
 
-Testé avec :
+Tested with:
 - Keithley 2410
 - PyMoDAQ 5.2.6
 - Windows 10
-- Connexion GPIB via NI-VISA
+- GPIB connection via NI-VISA
 
-Prérequis : installer pyvisa et les drivers NI-VISA
+Requirements: install pyvisa and the NI-VISA drivers
 """
 
 from typing import Union, List
@@ -23,11 +23,11 @@ from pymodaq_plugins_physik_instrumente.hardware.keithley2410_wrapper import Kei
 
 
 class DAQ_Move_Keithley2410(DAQ_Move_base):
-    """Plugin PyMoDAQ pour le Keithley 2410.
+    """PyMoDAQ plugin for the Keithley 2410.
 
-    Le Keithley 2410 est utilisé ici comme source de tension (actuateur).
-    Il source une tension et mesure le courant en retour.
-    La valeur "position" correspond à la tension appliquée en Volts.
+    The Keithley 2410 is used here as a voltage source (actuator).
+    It sources a voltage and measures the current in return.
+    The "position" value corresponds to the applied voltage in Volts.
     """
 
     is_multiaxes = False
@@ -49,7 +49,7 @@ class DAQ_Move_Keithley2410(DAQ_Move_base):
         self.controller: Keithley2410 = None
 
     def ini_stage(self, controller=None):
-        """Initialisation de la communication avec le Keithley 2410."""
+        """Initialize communication with the Keithley 2410."""
         if self.is_master:
             self.controller = Keithley2410(self.settings['visa_address'])
             self.controller.init_balayage(
@@ -64,11 +64,11 @@ class DAQ_Move_Keithley2410(DAQ_Move_base):
             self.controller = controller
             initialized = True
 
-        info = f"Keithley 2410 connecté sur {self.settings['visa_address']}"
+        info = f"Keithley 2410 connected on {self.settings['visa_address']}"
         return info, initialized
 
     def get_actuator_value(self) -> DataActuator:
-        """Lit la tension actuellement sourcée par le Keithley."""
+        """Read the voltage currently sourced by the Keithley."""
         try:
             voltage = self.controller.get_voltage()
         except Exception:
@@ -78,43 +78,43 @@ class DAQ_Move_Keithley2410(DAQ_Move_base):
         return pos
 
     def move_abs(self, value: DataActuator):
-        """Applique une tension absolue sur le Keithley."""
+        """Apply an absolute voltage on the Keithley."""
         value = self.check_bound(value)
         self.target_value = value
         value = self.set_position_with_scaling(value)
 
         voltage = value.value(self.axis_unit)
         self.controller.set_voltage(voltage)
-        self.emit_status(ThreadCommand('Update_Status', [f'Tension appliquée : {voltage} V']))
+        self.emit_status(ThreadCommand('Update_Status', [f'Applied voltage: {voltage} V']))
 
     def move_rel(self, value: DataActuator):
-        """Applique une tension relative par rapport à la position actuelle."""
+        """Apply a voltage relative to the current position."""
         value = self.check_bound(self.current_position + value) - self.current_position
         self.target_value = value + self.current_position
         value = self.set_position_relative_with_scaling(value)
 
         voltage = self.target_value.value(self.axis_unit)
         self.controller.set_voltage(voltage)
-        self.emit_status(ThreadCommand('Update_Status', [f'Tension appliquée : {voltage} V']))
+        self.emit_status(ThreadCommand('Update_Status', [f'Applied voltage: {voltage} V']))
 
     def move_home(self):
-        """Remet la tension à 0 V."""
+        """Reset the voltage to 0 V."""
         self.controller.set_voltage(0)
-        self.emit_status(ThreadCommand('Update_Status', ['Retour à 0 V']))
+        self.emit_status(ThreadCommand('Update_Status', ['Back to 0 V']))
 
     def stop_motion(self):
-        """Éteint la sortie du Keithley."""
+        """Turn off the Keithley output."""
         self.controller.output_off()
-        self.emit_status(ThreadCommand('Update_Status', ['Sortie éteinte']))
+        self.emit_status(ThreadCommand('Update_Status', ['Output off']))
         self.move_done()
 
     def close(self):
-        """Ferme la communication avec le Keithley."""
+        """Close communication with the Keithley."""
         if self.is_master:
             self.controller.close()
 
     def commit_settings(self, param: Parameter):
-        """Applique les changements de paramètres depuis l'interface."""
+        """Apply parameter changes from the interface."""
         if param.name() == 'compliance':
             self.controller.instrument.write(f':SENS:CURR:PROT {param.value()}')
         elif param.name() == 'current_range':
