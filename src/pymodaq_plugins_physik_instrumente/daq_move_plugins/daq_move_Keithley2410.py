@@ -52,7 +52,7 @@ class DAQ_Move_Keithley2410(DAQ_Move_base):
         """Initialize communication with the Keithley 2410."""
         if self.is_master:
             self.controller = Keithley2410(self.settings['visa_address'])
-            self.controller.init_balayage(
+            self.controller.init_scan(
                 voltMin=self.settings['volt_min'],
                 voltMax=self.settings['volt_max'],
                 NV=50,
