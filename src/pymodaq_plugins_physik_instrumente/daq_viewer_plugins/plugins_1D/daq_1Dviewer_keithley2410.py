@@ -1,7 +1,6 @@
-
 # -*- coding: utf-8 -*-
 """
-Plugin PyMoDAQ DAQ_1DViewer pour le Keithley 2410.
+PyMoDAQ DAQ_1DViewer plugin for the Keithley 2410.
 Displays the I-V curve in real time with configurable parameters.
 Includes Langmuir post-processing (linear regression, I0 calculation) and CSV export.
 """
@@ -89,6 +88,16 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             {'title': 'Vmin electron saturation (V):', 'name': 'vmin_saturation', 'type': 'float',
              'value': 15.0, 'min': 0.0,
              'tip': 'Min voltage above which the curve is considered in the electron saturation branch [V]'},
+            {'title': 'Derivative threshold (fraction of peak):', 'name': 'seuil_derivee', 'type': 'float',
+             'value': 0.3, 'min': 0.0, 'max': 1.0,
+             'tip': 'Fraction of the max dI/dV used to cut the Gaussian-like derivative peak. '
+                    'Defines the transition branch bounds automatically.'},
+            {'title': 'V transition min (calc):', 'name': 'vmin_trans_calc', 'type': 'float',
+             'value': 0.0, 'readonly': True,
+             'tip': 'Lower bound of the transition branch, computed from the derivative threshold'},
+            {'title': 'V transition max (calc):', 'name': 'vmax_trans_calc', 'type': 'float',
+             'value': 0.0, 'readonly': True,
+             'tip': 'Upper bound of the transition branch, computed from the derivative threshold'},
             {'title': 'Isat electron (mA):', 'name': 'isat_electron_result', 'type': 'float',
              'value': 0.0, 'readonly': True,
              'tip': 'Calculated electron saturation current Isat [mA]'},
@@ -107,9 +116,11 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
     def ini_attributes(self):
         self.controller: Keithley2410 = None
         self.x_axis = None
-        self._last_volts = None
-        self._last_courants = None
+        self._last_voltages = None
+        self._last_currents = None
         self.lcd_init = False
+        self._data_ready = False   # True only after a full, successful grab_data()
+        self._is_grabbing = False  # prevents overlapping grabs
 
     def commit_settings(self, param: Parameter):
         """Apply parameter changes from the interface."""
@@ -137,25 +148,18 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             self.controller = controller
             initialized = True
 
-        volts = self.controller.init_balayage(
+        voltages = self.controller.init_balayage(
             voltMin=self.settings['scan_settings', 'volt_min'],
             voltMax=self.settings['scan_settings', 'volt_max'],
             NV=self.settings['scan_settings', 'n_points'],
             compliance=self.settings['keithley_settings', 'compliance'],
             current_range=self.settings['keithley_settings', 'current_range']
         )
-        self.x_axis = Axis(data=volts, label='Voltage', units='V', index=0)
+        self.x_axis = Axis(data=voltages, label='Voltage', units='V', index=0)
 
-        self.dte_signal_temp.emit(DataToExport(
-            name='Keithley2410',
-            data=[DataFromPlugins(
-                name='I-V Curve',
-                data=[np.zeros(len(volts))],
-                dim='Data1D',
-                labels=['Current [A]'],
-                axes=[self.x_axis]
-            )]
-        ))
+        self._data_ready = False
+        self._last_voltages = None
+        self._last_currents = None
 
         if not self.lcd_init:
             self.emit_status(ThreadCommand('init_lcd', dict(
@@ -173,39 +177,60 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             self.controller.close()
 
     def grab_data(self, Naverage=1, **kwargs):
-        """Perform a full voltage sweep and return the I-V curve."""
+        """Perform a full voltage sweep and return the I-V curve.
+        A single complete acquisition per call, whether triggered by Snap (1)
+        or by the Continuous Grab (the repeated calling is decided by
+        PyMoDAQ itself, not by this method)."""
         import time
-        volts = self.x_axis.get_data()
-        courants = []
-        delay = self.settings['scan_settings', 'delay'] / 1000.0
 
-        for volt in volts:
-            _, courant = self.controller.measure(volt)
-            courants.append(courant)
-            if delay > 0:
-                time.sleep(delay)
+        if self._is_grabbing:
+            self.emit_status(ThreadCommand('Update_Status',
+                                           ['Acquisition already in progress, ignoring.']))
+            return
 
-        self.controller.output_off()
+        self._is_grabbing = True
+        self._data_ready = False
 
-        self._last_volts = list(volts)
-        self._last_courants = courants
+        try:
+            voltages = self.x_axis.get_data()
+            currents = []
+            delay = self.settings['scan_settings', 'delay'] / 1000.0
 
-        self.dte_signal.emit(DataToExport(
-            name='Keithley2410',
-            data=[DataFromPlugins(
-                name='I-V Curve',
-                data=[np.array(courants)],
-                dim='Data1D',
-                labels=['Current [A]'],
-                axes=[self.x_axis]
-            )]
-        ))
+            for voltage in voltages:
+                _, current = self.controller.measure(voltage)
+                currents.append(current)
+                if delay > 0:
+                    time.sleep(delay)
+
+            self.controller.output_off()
+
+            self._last_voltages = list(voltages)
+            self._last_currents = currents
+            self._data_ready = True
+
+            self.dte_signal.emit(DataToExport(
+                name='Keithley2410',
+                data=[DataFromPlugins(
+                    name='I-V Curve',
+                    data=[np.array(currents)],
+                    dim='Data1D',
+                    labels=['Current [A]'],
+                    axes=[self.x_axis]
+                )]
+            ))
+            self.emit_status(ThreadCommand('Update_Status',
+                                           [f'Acquisition done: {len(voltages)} points.']))
+        except Exception as e:
+            self._data_ready = False
+            self.emit_status(ThreadCommand('Update_Status', [f'Grab error: {e}']))
+        finally:
+            self._is_grabbing = False
 
     def export_csv_data(self):
         """Save the current I-V curve to a CSV file."""
-        if self._last_volts is None or self._last_courants is None:
+        if not self._data_ready or self._last_voltages is None or self._last_currents is None:
             self.emit_status(ThreadCommand('Update_Status',
-                                           ['No data available. Please run a Grab first.']))
+                                           ['No completed acquisition available. Snap (1) first.']))
             return
 
         filepath, _ = QFileDialog.getSaveFileName(
@@ -217,129 +242,190 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         with open(filepath, 'w', newline='') as f:
             writer = csv.writer(f, delimiter=';')
             writer.writerow(['Voltage[V]', 'Current[A]'])
-            for v, i in zip(self._last_volts, self._last_courants):
-                writer.writerow([v, i])
+            for voltage, current in zip(self._last_voltages, self._last_currents):
+                writer.writerow([voltage, current])
 
         self.emit_status(ThreadCommand('Update_Status', [f'CSV exported: {filepath}']))
+
+    def compute_transition_bounds(self, voltages, currents, threshold_frac):
+        """Determine the transition branch bounds by thresholding the peak of
+        dI/dV (expected to look Gaussian-like around the transition region
+        between the ionic and electron-saturation branches).
+
+        Returns
+        -------
+        (v_min, v_max) : voltage bounds, or (None, None) if no clear peak is
+            detected (e.g. a purely resistive load -> flat dI/dV).
+        """
+        voltages = np.asarray(voltages, dtype=float)
+        currents = np.asarray(currents, dtype=float)
+
+        if len(voltages) < 3:
+            return None, None
+
+        order = np.argsort(voltages)
+        voltages_sorted = voltages[order]
+        currents_sorted = currents[order]
+
+        didv = np.gradient(currents_sorted, voltages_sorted)
+        idx_peak = int(np.argmax(didv))
+        peak_val = didv[idx_peak]
+
+        if peak_val <= 0:
+           
+            return None, None
+
+        threshold_val = threshold_frac * peak_val
+
+        idx_left = idx_peak
+        while idx_left > 0 and didv[idx_left - 1] >= threshold_val:
+            idx_left -= 1
+        idx_right = idx_peak
+        while idx_right < len(didv) - 1 and didv[idx_right + 1] >= threshold_val:
+            idx_right += 1
+
+        v_min = float(voltages_sorted[idx_left])
+        v_max = float(voltages_sorted[idx_right])
+        return v_min, v_max
 
     def run_langmuir_regression(self):
         """Compute ionic branch regression, electron saturation, transition branch,
         floating potential Vf (intersection of ionic and transition regressions),
         and electron temperature Te."""
-        if self._last_volts is None or self._last_courants is None:
+        if not self._data_ready or self._last_voltages is None or self._last_currents is None:
             self.emit_status(ThreadCommand('Update_Status',
-                                           ['No data available. Please run a Grab first.']))
+                                           ['No completed acquisition available. Snap (1) first.']))
             return
 
-        S = self.settings['langmuir_settings', 'surface_sonde']
         vmax = self.settings['postproc_settings', 'vmax_regression']
         vmin_sat = self.settings['postproc_settings', 'vmin_saturation']
+        deriv_threshold = self.settings['postproc_settings', 'seuil_derivee']
 
         # ── Ionic branch: linear regression below Vmax ───────────────────────
-        MV_ion = [v for v, i in zip(self._last_volts, self._last_courants) if v < vmax]
-        MI_ion = [i for v, i in zip(self._last_volts, self._last_courants) if v < vmax]
+        voltages_ionic = [v for v, i in zip(self._last_voltages, self._last_currents) if v < vmax]
+        currents_ionic = [i for v, i in zip(self._last_voltages, self._last_currents) if v < vmax]
 
-        I0_mA = None
-        Constante = None
-        Pente = None
+        intercept_ionic = None
+        slope_ionic = None
 
-        if len(MV_ion) < 2:
+        if len(voltages_ionic) < 2:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['Not enough points for ionic regression.']))
         else:
             try:
-                lr = sm.OLS(MI_ion, sm.add_constant(MV_ion)).fit()
-                Constante = lr.params[0]
-                Pente = lr.params[1] if len(lr.params) > 1 else 0.0
-                I0_mA = Constante * 1e3
+                fit_ionic = sm.OLS(currents_ionic, sm.add_constant(voltages_ionic)).fit()
+                intercept_ionic = fit_ionic.params[0]
+                slope_ionic = fit_ionic.params[1] if len(fit_ionic.params) > 1 else 0.0
             except Exception as e:
                 self.emit_status(ThreadCommand('Update_Status', [f'Ionic regression error: {e}']))
 
         # ── Electron saturation branch: mean current above Vmin ─────────────
-        MI_sat = [i for v, i in zip(self._last_volts, self._last_courants) if v > vmin_sat]
-        Isat_mA = None
+        currents_saturation = [i for v, i in zip(self._last_voltages, self._last_currents) if v > vmin_sat]
+        isat_ma = None
 
-        if len(MI_sat) < 1:
+        if len(currents_saturation) < 1:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['Not enough points for electron saturation.']))
         else:
             try:
-                Isat_mA = float(np.mean(MI_sat)) * 1e3
+                isat_ma = float(np.mean(currents_saturation)) * 1e3
                 self.settings.child('postproc_settings', 'isat_electron_result').setValue(
-                    round(Isat_mA, 4))
+                    round(isat_ma, 4))
             except Exception as e:
                 self.emit_status(ThreadCommand('Update_Status', [f'Saturation error: {e}']))
 
-        # ── Transition branch: linear regression between Vmax and Vmin ──────
-        MV_trans = [v for v, i in zip(self._last_volts, self._last_courants)
-                    if vmax <= v <= vmin_sat]
-        MI_trans = [i for v, i in zip(self._last_volts, self._last_courants)
-                    if vmax <= v <= vmin_sat]
+        # ── Transition branch bounds: threshold on the dI/dV peak ────────────
+        v_trans_min, v_trans_max = self.compute_transition_bounds(
+            self._last_voltages, self._last_currents, deriv_threshold)
 
-        Vf = None
-        Ix_mA = None
-        Pente_trans = None
-        Intercept_trans = None
+        if v_trans_min is None or v_trans_max is None:
+            self.emit_status(ThreadCommand('Update_Status',
+                ['No clear dI/dV peak detected (flat or decreasing derivative) — '
+                 'transition branch bounds cannot be determined. Expected e.g. '
+                 'with a purely resistive load.']))
+            self.settings.child('postproc_settings', 'vmin_trans_calc').setValue(0.0)
+            self.settings.child('postproc_settings', 'vmax_trans_calc').setValue(0.0)
+            voltages_transition, currents_transition = [], []
+        else:
+            self.settings.child('postproc_settings', 'vmin_trans_calc').setValue(round(v_trans_min, 4))
+            self.settings.child('postproc_settings', 'vmax_trans_calc').setValue(round(v_trans_max, 4))
+            voltages_transition = [v for v, i in zip(self._last_voltages, self._last_currents)
+                                    if v_trans_min <= v <= v_trans_max]
+            currents_transition = [i for v, i in zip(self._last_voltages, self._last_currents)
+                                    if v_trans_min <= v <= v_trans_max]
 
-        if len(MV_trans) < 2:
+        vf = None
+        current_at_vf_ma = None
+        slope_transition = None
+        intercept_transition = None
+
+        if len(voltages_transition) < 2:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['Not enough points for transition branch regression.']))
-        elif I0_mA is None:
+        elif intercept_ionic is None:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['Ionic regression missing: cannot compute Vf.']))
         else:
             try:
-                lr_trans = sm.OLS(MI_trans, sm.add_constant(MV_trans)).fit()
-                Intercept_trans = lr_trans.params[0]
-                Pente_trans = lr_trans.params[1] if len(lr_trans.params) > 1 else 0.0
+                fit_transition = sm.OLS(currents_transition, sm.add_constant(voltages_transition)).fit()
+                intercept_transition = fit_transition.params[0]
+                slope_transition = fit_transition.params[1] if len(fit_transition.params) > 1 else 0.0
 
-                if Pente != Pente_trans:
+                slope_diff = slope_ionic - slope_transition
+                slope_scale = max(abs(slope_ionic), abs(slope_transition), 1e-12)
+
+                if abs(slope_diff) > 1e-9 * slope_scale:
                     # Vf = intersection of the two regression lines
-                    Vf = (Intercept_trans - Constante) / (Pente - Pente_trans)
-                    Ix = Constante + Pente * Vf
-                    Ix_mA = Ix * 1e3
+                    vf = (intercept_transition - intercept_ionic) / slope_diff
+                    current_at_vf = intercept_ionic + slope_ionic * vf
+                    current_at_vf_ma = current_at_vf * 1e3
 
-                    self.settings.child('postproc_settings', 'vf_result').setValue(round(Vf, 4))
+                    self.settings.child('postproc_settings', 'vf_result').setValue(round(vf, 4))
                     self.settings.child('postproc_settings', 'i_intersection_result').setValue(
-                        round(Ix_mA, 4))
+                        round(current_at_vf_ma, 4))
+                else:
+                    self.emit_status(ThreadCommand('Update_Status',
+                        ['Ionic and transition slopes are equal (e.g. resistive load): '
+                         'Vf cannot be computed.']))
             except Exception as e:
                 self.emit_status(ThreadCommand('Update_Status', [f'Transition regression error: {e}']))
 
         # ── Electron temperature from semilog slope of transition region ─────
-        MV_te = [v for v, i in zip(self._last_volts, self._last_courants)
-                 if vmax < v < vmin_sat and i > 0]
-        MI_te = [np.log(i) for v, i in zip(self._last_volts, self._last_courants)
-                 if vmax < v < vmin_sat and i > 0]
+        te_ev = None
+        if v_trans_min is not None and v_trans_max is not None:
+            voltages_te = [v for v, i in zip(self._last_voltages, self._last_currents)
+                           if v_trans_min < v < v_trans_max and i > 0]
+            log_currents_te = [np.log(i) for v, i in zip(self._last_voltages, self._last_currents)
+                               if v_trans_min < v < v_trans_max and i > 0]
 
-        Te_eV = None
-        if len(MV_te) >= 2:
-            try:
-                lr_te = sm.OLS(MI_te, sm.add_constant(MV_te)).fit()
-                pente_te = lr_te.params[1]
-                if pente_te > 0:
-                    Te_eV = 1.0 / pente_te
-                    self.settings.child('postproc_settings', 'te_result').setValue(round(Te_eV, 4))
-            except Exception as e:
-                self.emit_status(ThreadCommand('Update_Status', [f'Te error: {e}']))
+            if len(voltages_te) >= 2:
+                try:
+                    fit_te = sm.OLS(log_currents_te, sm.add_constant(voltages_te)).fit()
+                    slope_te = fit_te.params[1]
+                    if slope_te > 0:
+                        te_ev = 1.0 / slope_te
+                        self.settings.child('postproc_settings', 'te_result').setValue(round(te_ev, 4))
+                except Exception as e:
+                    self.emit_status(ThreadCommand('Update_Status', [f'Te error: {e}']))
 
         # ── Overlay on the plot ──────────────────────────────────────────────
-        volts_full = np.array(self._last_volts)
-        courants_full = np.array(self._last_courants)
-        plot_data = [courants_full]
+        voltages_full = np.array(self._last_voltages)
+        currents_full = np.array(self._last_currents)
+        plot_data = [currents_full]
         plot_labels = ['Current [A]']
 
-        if Constante is not None:
-            plot_data.append(Constante + Pente * volts_full)
+        if intercept_ionic is not None:
+            plot_data.append(intercept_ionic + slope_ionic * voltages_full)
             plot_labels.append('Ionic regression')
 
-        if Pente_trans is not None:
-            plot_data.append(Intercept_trans + Pente_trans * volts_full)
+        if slope_transition is not None:
+            plot_data.append(intercept_transition + slope_transition * voltages_full)
             plot_labels.append('Transition regression')
 
-        if Vf is not None:
-            idx_x = int(np.argmin(np.abs(volts_full - Vf)))
-            marker = np.full_like(volts_full, np.nan, dtype=float)
-            marker[idx_x] = Ix_mA / 1e3
+        if vf is not None:
+            idx_x = int(np.argmin(np.abs(voltages_full - vf)))
+            marker = np.full_like(voltages_full, np.nan, dtype=float)
+            marker[idx_x] = current_at_vf_ma / 1e3
             plot_data.append(marker)
             plot_labels.append('Vf (intersection)')
 
@@ -356,21 +442,21 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
 
         # ── Update LCD display ───────────────────────────────────────────────
         self.emit_status(ThreadCommand('lcd', [
-            np.array([Vf if Vf is not None else 0.0]),
-            np.array([Ix_mA if Ix_mA is not None else 0.0]),
-            np.array([Te_eV if Te_eV is not None else 0.0]),
+            np.array([vf if vf is not None else 0.0]),
+            np.array([current_at_vf_ma if current_at_vf_ma is not None else 0.0]),
+            np.array([te_ev if te_ev is not None else 0.0]),
         ]))
 
         # ── Status message ───────────────────────────────────────────────────
         status_parts = []
-        if Isat_mA is not None:
-            status_parts.append(f'Isat = {Isat_mA:.3f} mA')
-        if Vf is not None:
-            status_parts.append(f'Vf = {Vf:.3f} V')
-        if Ix_mA is not None:
-            status_parts.append(f'I at Vf = {Ix_mA:.3f} mA')
-        if Te_eV is not None:
-            status_parts.append(f'Te = {Te_eV:.3f} eV')
+        if isat_ma is not None:
+            status_parts.append(f'Isat = {isat_ma:.3f} mA')
+        if vf is not None:
+            status_parts.append(f'Vf = {vf:.3f} V')
+        if current_at_vf_ma is not None:
+            status_parts.append(f'I at Vf = {current_at_vf_ma:.3f} mA')
+        if te_ev is not None:
+            status_parts.append(f'Te = {te_ev:.3f} eV')
 
         if status_parts:
             self.emit_status(ThreadCommand('Update_Status',
@@ -385,4 +471,3 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
 
 if __name__ == '__main__':
     main(__file__)
-
