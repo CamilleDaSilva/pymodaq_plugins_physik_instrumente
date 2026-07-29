@@ -1,113 +1,124 @@
 # -*- coding: utf-8 -*-
 """
-Wrapper Python pour le Keithley 2410 (sourcemètre).
-Gère la communication bas niveau via pyvisa (GPIB).
-
-Ce fichier est destiné à être placé dans le dossier hardware/ du plugin PyMoDAQ.
-Il peut aussi être utilisé de manière autonome dans les scripts Langmuir.
+Python wrapper for the Keithley 2410 (sourcemeter).
+Handles low-level communication via pyvisa (GPIB).
+Singleton pattern: actuator and detector share the same GPIB connection.
 """
 
+import time
 import numpy as np
 import pyvisa
+
+_instances = {}
+_ref_counts = {}
+_initialized_addresses = set()
 
 
 class Keithley2410:
 
-    def __init__(self, adresse: str):
-        """Connexion au Keithley 2410 via GPIB.
+    def __new__(cls, adresse: str):
+        if adresse in _instances:
+            _ref_counts[adresse] += 1
+            return _instances[adresse]
+        instance = super().__new__(cls)
+        _instances[adresse] = instance
+        _ref_counts[adresse] = 1
+        instance._adresse = adresse
+        instance._connected = False
+        return instance
 
-        Parameters
-        ----------
-        adresse : str
-            Adresse VISA de l'instrument, ex: 'GPIB0::24::INSTR'
-        """
+    def __init__(self, adresse: str):
+        if self._connected:
+            return
         rm = pyvisa.ResourceManager()
-        print("Appareils connectés :")
+        print("Connected devices:")
         [print('\t ->', element) for element in rm.list_resources()]
+        time.sleep(0.2)
         self.instrument = rm.open_resource(adresse)
         self.instrument.timeout = 5000
         self.instrument.read_termination = '\n'
+        self.instrument.write_termination = '\n'
+        print(self.instrument.query('*IDN?'))
+        self._connected = True
 
     def init_balayage(self, voltMin: float, voltMax: float, NV: int,
-                      compliance: float = 700e-3, current_range: float = 20e-3):
-        """Initialise le Keithley pour un balayage en tension avec mesure de courant.
+                      compliance: float = 700e-3, current_range: float = None):
+        """Initialize the Keithley for a voltage sweep with current measurement.
 
         Parameters
         ----------
-        voltMin : float - tension minimale du balayage [V]
-        voltMax : float - tension maximale du balayage [V]
-        NV : int - nombre de points de mesure
-        compliance : float - limite de courant [A] (défaut 700 mA)
-        current_range : float - plage de mesure du courant [A] (défaut 20 mA)
-
-        Returns
-        -------
-        volts : array - liste des tensions de mesure
+        voltMin : float - minimum sweep voltage [V]
+        voltMax : float - maximum sweep voltage [V]
+        NV : int - number of measurement points
+        compliance : float - current limit [A] (default 700 mA)
+        current_range : float or None - current range [A], None = autorange
         """
         volts = np.linspace(voltMin, voltMax, NV)
+        if self._adresse in _initialized_addresses:
+            return volts
         voltRang = abs(voltMin) + abs(voltMax)
-        self.instrument.write('*rst')
+        self.instrument.write('*RST')
+        self.instrument.write('*CLS')
         self.instrument.write(':SYST:BEEP:STAT OFF')
+        self.instrument.write(':SENS:FUNC "CURR"')
+        if current_range is None:
+            self.instrument.write(':SENS:CURR:RANG:AUTO ON')
+        else:
+            self.instrument.write(f':SENS:CURR:RANG {current_range}')
         self.instrument.write(f':SENS:CURR:PROT {compliance}')
         self.instrument.write(':SOUR:FUNC VOLT')
         self.instrument.write(':SOUR:VOLT:MODE FIX')
         self.instrument.write(f':SOUR:VOLT:RANG {voltRang}')
         self.instrument.write(f':SOUR:VOLT:LEV {voltMin}')
-        self.instrument.write(f':SENS:CURR:RANG {current_range}')
+        _initialized_addresses.add(self._adresse)
         return volts
 
     def set_voltage(self, volt: float):
-        """Applique une tension sur la sortie du Keithley.
-
-        Parameters
-        ----------
-        volt : float - tension à appliquer [V]
-        """
+        """Apply a voltage on the Keithley output."""
         self.instrument.write(':OUTP ON')
         self.instrument.write(f':SOUR:VOLT:LEV {volt}')
 
     def get_voltage(self) -> float:
-        """Lit la tension actuellement sourcée.
-
-        Returns
-        -------
-        float - tension sourcée [V]
-        """
+        """Read the voltage currently being sourced."""
         response = self.instrument.query(':SOUR:VOLT:LEV?')
         return float(response.strip())
 
-    def read_current(self) -> float:
-        """Lit le courant mesuré par le Keithley.
-
-        Returns
-        -------
-        float - courant mesuré [A]
-        """
-        response = self.instrument.query('READ?')
+    def get_current(self) -> float:
+        """Read the current measured by the Keithley."""
+        response = self.instrument.query(':READ?')
         values = response.split(',')
         return float(values[1])
 
-    def measure(self, volt: float) -> tuple:
-        """Applique une tension et retourne (tension, courant) mesurés.
+    def measure(self, volt: float, stabilization_delay: float = 0.05) -> tuple:
+        """Apply a voltage and return the measured (voltage, current).
 
         Parameters
         ----------
-        volt : float - tension à appliquer [V]
+        volt : float - voltage to apply [V]
+        stabilization_delay : float - wait time before reading [s] (default 50ms)
 
         Returns
         -------
-        tuple : (tension [V], courant [A])
+        tuple : (voltage [V], current [A])
         """
         self.set_voltage(volt)
-        response = self.instrument.query('READ?')
+        time.sleep(stabilization_delay)
+        response = self.instrument.query(':READ?')
         values = response.split(',')
         return float(values[0]), float(values[1])
 
     def output_off(self):
-        """Éteint la sortie du Keithley."""
+        """Turn off the Keithley output."""
         self.instrument.write(':OUTP OFF')
 
     def close(self):
-        """Éteint la sortie et ferme la connexion."""
+        """Turn off the output and close the connection."""
+        adresse = self._adresse
+        _ref_counts[adresse] = max(0, _ref_counts.get(adresse, 1) - 1)
+        if _ref_counts[adresse] > 0:
+            return
         self.output_off()
         self.instrument.close()
+        self._connected = False
+        _instances.pop(adresse, None)
+        _initialized_addresses.discard(adresse)

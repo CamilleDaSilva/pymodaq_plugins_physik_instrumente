@@ -1,7 +1,18 @@
-# PICOMAX-E environment setup (PyMoDAQ + Keithley 2410)
+# PICOMAX-E environment setup (PyMoDAQ + Keithley 2410 / 2420)
 
-This folder lets you install everything needed to run the PyMoDAQ Keithley
-2410 plugin (viewer and move) on a new computer.
+This folder lets you install everything needed to run the PyMoDAQ plugins for
+the Keithley 2410 (move + 1D viewer) and Keithley 2420 (0D viewer) on a new
+computer.
+
+## Supported instruments / plugins
+
+- **Keithley 2410** — `DAQ_Move_Keithley2410` (voltage source) and
+  `DAQ_1DViewer_Keithley2410` (I-V sweep + Langmuir post-processing)
+- **Keithley 2420** — `DAQ_0DViewer_Keithley2420` (collector current readout)
+
+Usage examples: Langmuir probe characterization (2410 alone, 1D viewer) and
+RPA grid sweep + collector readout (2410 as move + 2420 as 0D viewer, driven
+via DAQ_Scan).
 
 ## Step 1 — Manual prerequisites (once per computer)
 
@@ -18,11 +29,15 @@ are not automated by `setup.bat`.
 
 ### 1.2. Install the NI-VISA drivers
 
-Required for Python to communicate with the Keithley over GPIB.
+Required for Python to communicate with the Keithley instruments over GPIB.
 
 - Download NI-VISA from the National Instruments website:
   https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html
 - Run the installer, restart the computer if prompted.
+
+> Note: check the GPIB address of each instrument (e.g. `GPIB0::24::INSTR`
+> for the 2410, `GPIB0::17::INSTR` for the 2420) — set them in the
+> corresponding plugin settings once the Dashboard is running.
 
 ### 1.3. Copy/clone the plugin repo
 
