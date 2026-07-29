@@ -24,7 +24,7 @@ class Keithley2420:
         Parameters
         ----------
         adresse : str
-            VISA address of the instrument, e.g. 'GPIB0::17::INSTR'
+            VISA address of the instrument, e.g. 'GPIB1::25::INSTR'
         """
         rm = pyvisa.ResourceManager()
         print("Connected devices:")

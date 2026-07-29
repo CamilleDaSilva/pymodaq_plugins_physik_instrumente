@@ -29,8 +29,8 @@ class DAQ_0DViewer_Keithley2420(DAQ_Viewer_base):
 
         {'title': 'Keithley Settings', 'name': 'keithley_settings', 'type': 'group', 'children': [
             {'title': 'VISA Address:', 'name': 'visa_address', 'type': 'str',
-             'value': 'GPIB0::17::INSTR',
-             'tip': 'VISA address of the Keithley 2420 (e.g. GPIB0::17::INSTR)'},
+             'value': 'GPIB1::25::INSTR',
+             'tip': 'VISA address of the Keithley 2420 (e.g. GPIB1::25::INSTR)'},
             {'title': 'Source Voltage (V):', 'name': 'source_voltage', 'type': 'float',
              'value': 0.0, 'min': -60.0, 'max': 60.0,
              'tip': 'Fixed voltage sourced on the collector (0 V for a pure ammeter usage)'},
