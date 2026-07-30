@@ -7,6 +7,8 @@ Acquires and displays the I-V curve with Langmuir post-processing.
 import csv
 import numpy as np
 import statsmodels.api as sm
+from qtpy.QtWidgets import QFileDialog
+from datetime import datetime
 
 from pymodaq_utils.utils import ThreadCommand
 from pymodaq_data.data import DataToExport, Axis
@@ -103,17 +105,14 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         if param.name() == 'compliance':
             self.controller.instrument.write(f':SENS:CURR:PROT {param.value()}')
         elif param.name() == 'current_range':
-            self.controller.instrument.write(f':SENS:CURR:RANG {param.value()}')
+            if param.value() == 0.0:
+                self.controller.instrument.write(':SENS:CURR:RANG:AUTO ON')
+            else:
+                self.controller.instrument.write(f':SENS:CURR:RANG {param.value()}')
         elif param.name() == 'nplc':
             self.controller.instrument.write(f':SENS:CURR:NPLC {param.value()}')
         elif param.name() == 'voltage_range':
             self.controller.instrument.write(f':SOUR:VOLT:RANG {param.value()}')
-        elif param.name() == 'run_regression' and param.value():
-            self.run_langmuir_regression()
-            self.settings.child('keithley_settings', 'run_regression').setValue(False)
-        elif param.name() == 'export_data' and param.value():
-            self.export_csv_data()
-            self.settings.child('keithley_settings', 'export_data').setValue(False)
 
     def ini_detector(self, controller=None):
         """Initialize communication with the Keithley 2410."""
@@ -124,6 +123,7 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             self.controller = controller
             initialized = True
 
+        # Connect buttons via sigValueChanged (runs in GUI thread → QFileDialog works)
         self.settings.child('keithley_settings', 'run_regression').sigValueChanged.connect(
             lambda param: self.run_langmuir_regression())
         self.settings.child('keithley_settings', 'export_data').sigValueChanged.connect(
@@ -179,8 +179,6 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         for volt in volts:
             _, current = self.controller.measure(volt, stabilization_delay=delay if delay > 0 else 0.05)
             currents.append(current)
-            if delay > 0:
-                time.sleep(delay)
 
         self.controller.output_off()
         self._last_volts = list(volts)
@@ -201,36 +199,35 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         self.emit_status(ThreadCommand('stop', []))
 
     def export_csv_data(self):
-        """Save the current I-V curve to a CSV file."""
+        """Save the current I-V curve to a CSV file (user chooses location)."""
         if self._last_volts is None or self._last_currents is None:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['No data available. Please run a Grab first.']))
             return
 
-        import os
-        from datetime import datetime
         date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filepath = os.path.join(os.path.expanduser("~"), f"IV_curve_{date}.csv")
+        filepath, _ = QFileDialog.getSaveFileName(
+            None, 'Export CSV', f'IV_curve_{date}.csv', 'CSV files (*.csv)')
 
-        with open(filepath, 'w', newline='') as f:
-            writer = csv.writer(f, delimiter=';')
-            writer.writerow(['Voltage[V]', 'Current[A]'])
-            for v, i in zip(self._last_volts, self._last_currents):
-                writer.writerow([v, i])
+        if not filepath:
+            return
 
-        self.emit_status(ThreadCommand('Update_Status', [f'CSV exported: {filepath}']))
+        try:
+            with open(filepath, 'w', newline='') as f:
+                writer = csv.writer(f, delimiter=';')
+                writer.writerow(['Voltage[V]', 'Current[A]'])
+                for v, i in zip(self._last_volts, self._last_currents):
+                    writer.writerow([v, i])
+            self.emit_status(ThreadCommand('Update_Status', [f'CSV exported: {filepath}']))
+        except Exception as e:
+            self.emit_status(ThreadCommand('Update_Status', [f'Export error: {e}']))
 
     def _auto_detect_bounds(self, volts_arr, currents_arr):
-        """Detect Vmax and Vmin_sat from the dI/dV Gaussian curve.
-
-        Finds the two points where dI/dV crosses the user-defined threshold
-        on each side of the peak.
-        """
+        """Detect Vmax and Vmin_sat from the dI/dV Gaussian curve."""
         seuil = self.settings['postproc_settings', 'auto_detect_threshold']
         dI = np.gradient(currents_arr, volts_arr)
         idx_peak = int(np.argmax(dI))
 
-        # Left bound: scan left from peak until dI/dV < seuil
         idx_left = 0
         for k in range(idx_peak, 0, -1):
             if dI[k] < seuil:
@@ -238,7 +235,6 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
                 break
         vmax = float(volts_arr[idx_left])
 
-        # Right bound: scan right from peak until dI/dV < seuil
         idx_right = len(dI) - 1
         for k in range(idx_peak, len(dI)):
             if dI[k] < seuil:
