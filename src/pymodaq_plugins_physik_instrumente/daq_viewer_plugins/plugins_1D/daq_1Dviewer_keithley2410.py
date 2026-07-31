@@ -83,7 +83,7 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
         # ── Post-processing ──────────────────────────────────────────────────
         {'title': 'Post-processing', 'name': 'postproc_settings', 'type': 'group', 'children': [
             {'title': 'Vmax ionic regression (V):', 'name': 'vmax_regression', 'type': 'float',
-             'value': -5.0, 'max': 0.0,
+             'value': -10.0, 'max': 0.0,
              'tip': 'Max voltage for the linear regression of the ionic branch [V]'},
             {'title': 'Vmin electron saturation (V):', 'name': 'vmin_saturation', 'type': 'float',
              'value': 15.0, 'min': 0.0,
