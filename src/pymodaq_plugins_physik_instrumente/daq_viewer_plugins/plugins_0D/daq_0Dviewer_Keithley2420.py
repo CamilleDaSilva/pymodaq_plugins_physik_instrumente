@@ -38,7 +38,7 @@ class DAQ_0DViewer_Keithley2420(DAQ_Viewer_base):
              'value': 100e-3, 'min': 0.0, 'max': 3.0,
              'tip': 'Maximum current limit [A] (2420: 3 A max)'},
             {'title': 'Current Range (A):', 'name': 'current_range', 'type': 'float',
-             'value': 20e-3, 'min': 1e-9, 'max': 3.0,
+             'value': 100e-6, 'min': 1e-9, 'max': 3.0,
              'tip': 'Current measurement range [A]'},
             {'title': 'NPLC:', 'name': 'nplc', 'type': 'float',
              'value': 1.0, 'min': 0.01, 'max': 10.0,

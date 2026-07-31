@@ -2,93 +2,93 @@
 """
 Python wrapper for the Keithley 2420 (source-meter used as an ammeter for the
 RPA collector current measurement).
-Low-level communication handled via pyvisa (GPIB).
-Meant to be placed in the hardware/ folder of the PyMoDAQ plugin, next to
-keithley2410_wrapper.py. Can also be used standalone in scripts.
-
-Keithley 2420 ratings: 60 V / 3 A (vs 1100 V / 1 A on the 2410) — defaults
-below are adapted accordingly. Adjust compliance / current_range to your
-actual RPA collector circuit before first use.
 
 Author: Laurianne
 ONERA DPHY/CSE — PICOMAX-E, 2026
 """
-import numpy as np
+
 import pyvisa
 
 
 class Keithley2420:
-    def __init__(self, adresse: str):
-        """Connect to the Keithley 2420 via GPIB.
 
-        Parameters
-        ----------
-        adresse : str
-            VISA address of the instrument, e.g. 'GPIB1::25::INSTR'
-        """
+    def __init__(self, adresse: str):
         rm = pyvisa.ResourceManager()
+
         print("Connected devices:")
-        [print('\t ->', element) for element in rm.list_resources()]
+        for element in rm.list_resources():
+            print("\t ->", element)
+
         self.instrument = rm.open_resource(adresse)
         self.instrument.timeout = 5000
         self.instrument.read_termination = '\n'
+        self.instrument.write_termination = '\n'
 
-    def init_mesure(self, source_voltage: float = 0.0,
-                     compliance: float = 100e-3, current_range: float = 20e-3):
-        """Initialize the Keithley 2420 to source a fixed voltage (typically
-        0 V for a pure ammeter usage on the RPA collector) and measure current.
+    def init_mesure(
+        self,
+        source_voltage: float = 0.0,
+        compliance: float = 100e-3,
+        current_range: float | None = None,
+    ):
+        """
+        Initialise le Keithley en mesure de courant.
 
         Parameters
         ----------
-        source_voltage : float - fixed voltage sourced on the collector [V]
-        compliance : float - current compliance limit [A] (2420 max 3 A)
-        current_range : float - current measurement range [A]
+        source_voltage : float
+            Tension appliquée au collecteur.
+
+        compliance : float
+            Limite de courant.
+
+        current_range : float or None
+            None -> autorange
+            float -> plage fixe en ampères.
         """
-        self.instrument.write('*rst')
-        self.instrument.write(':SYST:BEEP:STAT OFF')
-        self.instrument.write(f':SENS:CURR:PROT {compliance}')
-        self.instrument.write(':SOUR:FUNC VOLT')
-        self.instrument.write(':SOUR:VOLT:MODE FIX')
-        self.instrument.write(f':SOUR:VOLT:LEV {source_voltage}')
-        self.instrument.write(f':SENS:CURR:RANG {current_range}')
-        self.instrument.write(':OUTP ON')
+
+        inst = self.instrument
+
+        inst.write("*RST")
+        inst.write("*CLS")
+
+        inst.write(":SYST:BEEP:STAT OFF")
+
+        inst.write(":SOUR:FUNC VOLT")
+        inst.write(":SOUR:VOLT:MODE FIX")
+        inst.write(f":SOUR:VOLT:LEV {source_voltage}")
+
+        inst.write(':SENS:FUNC "CURR"')
+
+        # compliance
+        inst.write(f":SENS:CURR:PROT {compliance}")
+
+        # intégration (réduit le bruit)
+        inst.write(":SENS:CURR:NPLC 5")
+
+        if current_range is None:
+            inst.write(":SENS:CURR:RANG:AUTO ON")
+        else:
+            inst.write(":SENS:CURR:RANG:AUTO OFF")
+            inst.write(f":SENS:CURR:RANG {current_range}")
+
+        inst.write(":FORM:ELEM CURR")
+
+        inst.write(":OUTP ON")
 
     def set_source_voltage(self, volt: float):
-        """Change the fixed voltage sourced on the collector.
+        self.instrument.write(f":SOUR:VOLT:LEV {volt}")
 
-        Parameters
-        ----------
-        volt : float - voltage to apply [V]
-        """
-        self.instrument.write(f':SOUR:VOLT:LEV {volt}')
 
     def read_current(self) -> float:
-        """Read the current measured by the Keithley 2420.
-
-        Returns
-        -------
-        float - measured current [A]
-        """
-        response = self.instrument.query('READ?')
-        values = response.split(',')
-        return float(values[1])
+        return float(self.instrument.query(":READ?"))
+    
 
     def measure(self) -> float:
-        """Trigger a single current measurement and return it.
-
-        Returns
-        -------
-        float - measured current [A]
-        """
-        response = self.instrument.query('READ?')
-        values = response.split(',')
-        return float(values[1])
+        return float(self.instrument.query(":READ?"))
 
     def output_off(self):
-        """Turn off the Keithley output."""
-        self.instrument.write(':OUTP OFF')
+        self.instrument.write(":OUTP OFF")
 
     def close(self):
-        """Turn off the output and close the connection."""
         self.output_off()
         self.instrument.close()
