@@ -3,9 +3,12 @@
 Python wrapper for the Keithley 2410 (sourcemeter).
 Handles low-level communication via pyvisa (GPIB).
 Singleton pattern: actuator and detector share the same GPIB connection.
+Thread-safe: a lock protects every write/query since the move plugin and
+the 1D viewer can access the same instrument from different threads.
 """
 
 import time
+import threading
 import numpy as np
 import pyvisa
 
@@ -25,6 +28,7 @@ class Keithley2410:
         _ref_counts[adresse] = 1
         instance._adresse = adresse
         instance._connected = False
+        instance._lock = threading.Lock()
         return instance
 
     def __init__(self, adresse: str):
@@ -38,12 +42,13 @@ class Keithley2410:
         self.instrument.timeout = 5000
         self.instrument.read_termination = '\n'
         self.instrument.write_termination = '\n'
-        print(self.instrument.query('*IDN?'))
+        with self._lock:
+            print(self.instrument.query('*IDN?'))
         self._connected = True
 
     def init_balayage(self, voltMin: float, voltMax: float, NV: int,
                       compliance: float = 700e-3, current_range: float = None):
-        """Initialize the Keithley for a voltage sweep with current measurement.
+        """Initialize the Keithley for a voltage sweep (source V, measure I optional).
 
         Parameters
         ----------
@@ -54,62 +59,71 @@ class Keithley2410:
         current_range : float or None - current range [A], None = autorange
         """
         volts = np.linspace(voltMin, voltMax, NV)
-        if self._adresse in _initialized_addresses:
-            return volts
+
+        # Always re-init (remove the early-return that prevented reconfiguration)
         voltRang = abs(voltMin) + abs(voltMax)
-        self.instrument.write('*RST')
-        self.instrument.write('*CLS')
-        self.instrument.write(':SYST:BEEP:STAT OFF')
-        self.instrument.write(':SENS:FUNC "CURR"')
-        if current_range is None:
-            self.instrument.write(':SENS:CURR:RANG:AUTO ON')
-        else:
-            self.instrument.write(f':SENS:CURR:RANG {current_range}')
-        self.instrument.write(f':SENS:CURR:PROT {compliance}')
-        self.instrument.write(':SOUR:FUNC VOLT')
-        self.instrument.write(':SOUR:VOLT:MODE FIX')
-        self.instrument.write(f':SOUR:VOLT:RANG {voltRang}')
-        self.instrument.write(f':SOUR:VOLT:LEV {voltMin}')
+        if voltRang < 20:
+            voltRang = 20.0  # minimum useful range for ±20 V tests
+
+        with self._lock:
+            self.instrument.write('*RST')
+            self.instrument.write('*CLS')
+            self.instrument.write(':SYST:BEEP:STAT OFF')
+
+            # Source voltage, fixed mode
+            self.instrument.write(':SOUR:FUNC VOLT')
+            self.instrument.write(':SOUR:VOLT:MODE FIX')
+            self.instrument.write(f':SOUR:VOLT:RANG {voltRang}')
+            self.instrument.write(f':SOUR:VOLT:LEV {voltMin}')
+
+            # Sense current (even if we mostly use the 2420 for the RPA)
+            self.instrument.write(':SENS:FUNC "CURR"')
+            self.instrument.write(f':SENS:CURR:PROT {compliance}')
+            if current_range is None:
+                self.instrument.write(':SENS:CURR:RANG:AUTO ON')
+            else:
+                self.instrument.write(':SENS:CURR:RANG:AUTO OFF')
+                self.instrument.write(f':SENS:CURR:RANG {current_range}')
+
+            # Format: voltage, current (useful if we ever read from 2410)
+            self.instrument.write(':FORM:ELEM VOLT,CURR')
+
         _initialized_addresses.add(self._adresse)
         return volts
 
     def set_voltage(self, volt: float):
         """Apply a voltage on the Keithley output."""
-        self.instrument.write(':OUTP ON')
-        self.instrument.write(f':SOUR:VOLT:LEV {volt}')
+        with self._lock:
+            self.instrument.write(':OUTP ON')
+            self.instrument.write(f':SOUR:VOLT:LEV {volt}')
 
     def get_voltage(self) -> float:
         """Read the voltage currently being sourced."""
-        response = self.instrument.query(':SOUR:VOLT:LEV?')
+        with self._lock:
+            response = self.instrument.query(':SOUR:VOLT:LEV?')
         return float(response.strip())
 
     def get_current(self) -> float:
-        """Read the current measured by the Keithley."""
-        response = self.instrument.query(':READ?')
+        """Read the current measured by the Keithley (if sensing on 2410)."""
+        with self._lock:
+            response = self.instrument.query(':READ?')
         values = response.split(',')
-        return float(values[1])
+        # FORM:ELEM VOLT,CURR → index 1 is current
+        return float(values[1]) if len(values) > 1 else float(values[0])
 
     def measure(self, volt: float, stabilization_delay: float = 0.05) -> tuple:
-        """Apply a voltage and return the measured (voltage, current).
-
-        Parameters
-        ----------
-        volt : float - voltage to apply [V]
-        stabilization_delay : float - wait time before reading [s] (default 50ms)
-
-        Returns
-        -------
-        tuple : (voltage [V], current [A])
-        """
+        """Apply a voltage and return the measured (voltage, current)."""
         self.set_voltage(volt)
         time.sleep(stabilization_delay)
-        response = self.instrument.query(':READ?')
+        with self._lock:
+            response = self.instrument.query(':READ?')
         values = response.split(',')
         return float(values[0]), float(values[1])
 
     def output_off(self):
         """Turn off the Keithley output."""
-        self.instrument.write(':OUTP OFF')
+        with self._lock:
+            self.instrument.write(':OUTP OFF')
 
     def close(self):
         """Turn off the output and close the connection."""
@@ -118,7 +132,8 @@ class Keithley2410:
         if _ref_counts[adresse] > 0:
             return
         self.output_off()
-        self.instrument.close()
+        with self._lock:
+            self.instrument.close()
         self._connected = False
         _instances.pop(adresse, None)
         _initialized_addresses.discard(adresse)
