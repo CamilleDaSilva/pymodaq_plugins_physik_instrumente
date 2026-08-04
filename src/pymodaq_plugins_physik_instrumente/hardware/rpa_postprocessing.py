@@ -4,8 +4,8 @@ Post-traitement de la courbe I-V du RPA (Retarding Potential Analyzer).
 
 Fournit :
     - derivative()        : dI/dV lissée (Savitzky-Golay)
-    - weighted_mean_std() : moyenne / écart-type de la distribution en énergie
-    - fit_gaussian()      : ajustement gaussien de la distribution en énergie
+    - weighted_mean_std()  : moyenne / écart-type de la distribution en énergie
+    - fit_gaussian()       : ajustement gaussien de la distribution en énergie
 
 Author: Camille Da Silva
 ONERA DPHY/CSE — PICOMAX-E, 2026
@@ -60,17 +60,10 @@ def derivative(voltages, currents, window_length: int = 9, polyorder: int = 2):
     wl = min(wl, n if n % 2 == 1 else n - 1)
 
     dv = np.mean(np.diff(voltages))
-    if dv == 0:
-        return np.gradient(currents, voltages)
 
     try:
-        return savgol_filter(
-            currents,
-            window_length=wl,
-            polyorder=polyorder,
-            deriv=1,
-            delta=abs(dv),
-        )
+        return savgol_filter(currents, window_length=wl, polyorder=polyorder,
+                              deriv=1, delta=abs(dv))
     except Exception:
         return np.gradient(currents, voltages)
 
@@ -90,7 +83,7 @@ def weighted_mean_std(voltages, distribution):
     total = np.sum(weights)
 
     if total <= 0:
-        return float("nan"), float("nan")
+        return float('nan'), float('nan')
 
     mean = np.sum(voltages * weights) / total
     variance = np.sum(weights * (voltages - mean) ** 2) / total
@@ -115,18 +108,14 @@ def fit_gaussian(voltages, distribution):
     if np.isnan(mean0):
         return None, None
     if sigma0 <= 0 or np.isnan(sigma0):
-        sigma0 = (voltages.max() - voltages.min()) / 6.0
+        sigma0 = (voltages.max() - voltages.min()) / 6
 
     amplitude0 = np.max(distribution) - np.min(distribution)
-    if amplitude0 == 0:
-        return None, None
     offset0 = np.median(distribution)
     p0 = [amplitude0, mean0, sigma0, offset0]
 
     try:
         popt, _ = curve_fit(gaussian, voltages, distribution, p0=p0, maxfev=5000)
-        # sigma toujours positif
-        popt[2] = abs(popt[2])
     except Exception:
         return None, None
 
