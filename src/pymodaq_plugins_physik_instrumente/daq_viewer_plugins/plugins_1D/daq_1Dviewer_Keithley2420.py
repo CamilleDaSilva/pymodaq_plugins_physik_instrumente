@@ -50,12 +50,15 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
             {'title': 'VISA Address:', 'name': 'visa_address', 'type': 'str',
              'value': 'GPIB0::24::INSTR'},
             {'title': 'Compliance (A):', 'name': 'compliance', 'type': 'float',
-             'value': 0.02, 'min': 0.0, 'max': 1.05},
+             'value': 0.02, 'min': 0.0, 'max': 1.05,
+             'tip': 'Le 2410 est limite a 22W max. A 700V, le courant max '
+                    'utilisable est ~21-31 mA -> ne pas depasser ~0.03 A '
+                    'en haute tension.'},
             {'title': 'Current Range (A):', 'name': 'current_range', 'type': 'float',
              'value': 20e-3, 'min': 0.0, 'max': 1.05,
              'tip': 'Range of the 2410 (if its own current is also read). ~20 mA for a resistor test'},
             {'title': 'Voltage Range (V):', 'name': 'voltage_range', 'type': 'float',
-             'value': 40.0, 'min': 0.0, 'max': 210.0,
+             'value': 1200.0, 'min': 0.0, 'max': 1200.0,
              'tip': 'Must cover |Vmin| + |Vmax|'},
         ]},
 
@@ -78,9 +81,9 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
 
         {'title': 'Scan Settings', 'name': 'scan_settings', 'type': 'group', 'children': [
             {'title': 'Voltage Min (V):', 'name': 'volt_min', 'type': 'float',
-             'value': -20.0, 'min': -210.0, 'max': 210.0},
+             'value': 500.0, 'min': -1100.0, 'max': 1100.0},
             {'title': 'Voltage Max (V):', 'name': 'volt_max', 'type': 'float',
-             'value': 20.0, 'min': -210.0, 'max': 210.0},
+             'value': 700.0, 'min': -1100.0, 'max': 1100.0},
             {'title': 'N points:', 'name': 'n_points', 'type': 'int',
              'value': 41, 'min': 2, 'max': 2500},
             {'title': 'N Average:', 'name': 'n_average', 'type': 'int',
@@ -163,6 +166,46 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         self._data_ready = False
         self._is_grabbing = False
 
+    def _apply_scan_range(self):
+        if self.controller_2410 is None:
+            return
+
+        voltages = self.controller_2410.init_balayage(
+            voltMin=self.settings['scan_settings', 'volt_min'],
+            voltMax=self.settings['scan_settings', 'volt_max'],
+            NV=self.settings['scan_settings', 'n_points'],
+            compliance=self.settings['k2410_settings', 'compliance'],
+            current_range=self.settings['k2410_settings', 'current_range']
+        )
+
+        vrange = self.settings['k2410_settings', 'voltage_range']
+        with self.controller_2410._lock:
+            self.controller_2410.instrument.write(f':SOUR:VOLT:RANG {vrange}')
+
+        self.x_axis = Axis(data=voltages, label='Grid Voltage', units='V', index=0)
+        self._last_voltages = None
+        self._last_currents = None
+
+        self.dte_signal_temp.emit(DataToExport(
+            name='RPA',
+            data=[
+                DataFromPlugins(
+                    name='I-V Curve',
+                    data=[np.zeros(len(voltages))],
+                    dim='Data1D',
+                    labels=['Collector Current [A]'],
+                    axes=[self.x_axis]
+                ),
+                DataFromPlugins(
+                    name='dI-dV (Energy Distribution)',
+                    data=[np.zeros(len(voltages)), np.zeros(len(voltages))],
+                    dim='Data1D',
+                    labels=['dI/dV [A/V]', 'Gaussian fit'],
+                    axes=[self.x_axis]
+                ),
+            ]
+        ))
+
     def commit_settings(self, param: Parameter):
         """Apply parameter changes from the interface."""
 
@@ -197,6 +240,10 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                 self.settings.child('postproc_settings', 'smooth_window').setValue(new_wl)
             return
 
+        if param.name() in ('volt_min', 'volt_max', 'n_points') and param.parent().name() == 'scan_settings':
+            self._apply_scan_range()
+            return
+
         if not hasattr(self, 'controller_2410') or self.controller_2410 is None:
             return
         if param.name() == 'compliance' and param.parent().name() == 'k2410_settings':
@@ -219,18 +266,6 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         """Initialize communication with both the 2410 (grid) and 2420 (collector)."""
         if self.is_master:
             self.controller_2410 = Keithley2410(self.settings['k2410_settings', 'visa_address'])
-            voltages = self.controller_2410.init_balayage(
-                voltMin=self.settings['scan_settings', 'volt_min'],
-                voltMax=self.settings['scan_settings', 'volt_max'],
-                NV=self.settings['scan_settings', 'n_points'],
-                compliance=self.settings['k2410_settings', 'compliance'],
-                current_range=self.settings['k2410_settings', 'current_range']
-            )
-
-            vrange = self.settings['k2410_settings', 'voltage_range']
-            with self.controller_2410._lock:
-                self.controller_2410.instrument.write(f':SOUR:VOLT:RANG {vrange}')
-
             self.controller_2420 = Keithley2420(self.settings['k2420_settings', 'visa_address'])
             self.controller_2420.init_mesure(
                 source_voltage=self.settings['k2420_settings', 'source_voltage'],
@@ -238,6 +273,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                 current_range=self.settings['k2420_settings', 'current_range'],
                 nplc=self.settings['k2420_settings', 'nplc']
             )
+            self._apply_scan_range()
             initialized = True
         else:
             self.controller_2410, self.controller_2420 = controller
@@ -246,9 +282,8 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                 self.settings['scan_settings', 'volt_max'],
                 self.settings['scan_settings', 'n_points']
             )
+            self.x_axis = Axis(data=voltages, label='Grid Voltage', units='V', index=0)
             initialized = True
-
-        self.x_axis = Axis(data=voltages, label='Grid Voltage', units='V', index=0)
 
         self._data_ready = False
         self._last_voltages = None
@@ -257,25 +292,27 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         self._last_div = None
         self._last_fitted = None
 
-        self.dte_signal_temp.emit(DataToExport(
-            name='RPA',
-            data=[
-                DataFromPlugins(
-                    name='I-V Curve',
-                    data=[np.zeros(len(voltages))],
-                    dim='Data1D',
-                    labels=['Collector Current [A]'],
-                    axes=[self.x_axis]
-                ),
-                DataFromPlugins(
-                    name='dI-dV (Energy Distribution)',
-                    data=[np.zeros(len(voltages)), np.zeros(len(voltages))],
-                    dim='Data1D',
-                    labels=['dI/dV [A/V]', 'Gaussian fit'],
-                    axes=[self.x_axis]
-                ),
-            ]
-        ))
+        if not self.is_master:
+            voltages = self.x_axis.get_data()
+            self.dte_signal_temp.emit(DataToExport(
+                name='RPA',
+                data=[
+                    DataFromPlugins(
+                        name='I-V Curve',
+                        data=[np.zeros(len(voltages))],
+                        dim='Data1D',
+                        labels=['Collector Current [A]'],
+                        axes=[self.x_axis]
+                    ),
+                    DataFromPlugins(
+                        name='dI-dV (Energy Distribution)',
+                        data=[np.zeros(len(voltages)), np.zeros(len(voltages))],
+                        dim='Data1D',
+                        labels=['dI/dV [A/V]', 'Gaussian fit'],
+                        axes=[self.x_axis]
+                    ),
+                ]
+            ))
 
         info = (f"2410 grid on {self.settings['k2410_settings', 'visa_address']}, "
                 f"2420 collector on {self.settings['k2420_settings', 'visa_address']}")
