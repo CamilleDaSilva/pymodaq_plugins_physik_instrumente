@@ -29,7 +29,7 @@ class DAQ_Move_Keithley2410(DAQ_Move_base):
          'value': 'GPIB0::24::INSTR'},
         {'title': 'Voltage Min (V):', 'name': 'volt_min', 'type': 'float', 'value': -20.0},
         {'title': 'Voltage Max (V):', 'name': 'volt_max', 'type': 'float', 'value': 20.0},
-        {'title': 'Compliance (A):', 'name': 'compliance', 'type': 'float', 'value': 0.7},
+        {'title': 'Compliance (A):', 'name': 'compliance', 'type': 'float', 'value': 0.02},
         {'title': 'Current Range (A):', 'name': 'current_range', 'type': 'float',
          'value': 20e-3,
          'tip': 'Calibre de courant du 2410 (utile si on lit aussi le courant ici)'},

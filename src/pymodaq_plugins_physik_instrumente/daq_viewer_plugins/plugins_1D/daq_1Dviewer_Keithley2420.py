@@ -50,7 +50,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
             {'title': 'VISA Address:', 'name': 'visa_address', 'type': 'str',
              'value': 'GPIB0::24::INSTR'},
             {'title': 'Compliance (A):', 'name': 'compliance', 'type': 'float',
-             'value': 700e-3, 'min': 0.0, 'max': 1.05},
+             'value': 0.02, 'min': 0.0, 'max': 1.05},
             {'title': 'Current Range (A):', 'name': 'current_range', 'type': 'float',
              'value': 20e-3, 'min': 0.0, 'max': 1.05,
              'tip': 'Range of the 2410 (if its own current is also read). ~20 mA for a resistor test'},
