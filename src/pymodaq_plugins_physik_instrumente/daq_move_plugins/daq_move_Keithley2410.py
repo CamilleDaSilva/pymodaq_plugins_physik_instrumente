@@ -30,12 +30,11 @@ class DAQ_Move_Keithley2410(DAQ_Move_base):
         {'title': 'Voltage Min (V):', 'name': 'volt_min', 'type': 'float', 'value': 500.0},
         {'title': 'Voltage Max (V):', 'name': 'volt_max', 'type': 'float', 'value': 700.0},
         {'title': 'Compliance (A):', 'name': 'compliance', 'type': 'float', 'value': 0.02,
-         'tip': 'Le 2410 est limite a 22W max. A 700V, le courant max '
-                'utilisable est ~21-31 mA -> ne pas depasser ~0.03 A '
-                'en haute tension.'},
+         'tip': 'The 2410 is limited to 22 W max. At 700 V, the maximum usable current '
+                'is about 21-31 mA -> do not exceed about 0.03 A at high voltage.'},
         {'title': 'Current Range (A):', 'name': 'current_range', 'type': 'float',
          'value': 20e-3,
-         'tip': 'Calibre de courant du 2410 (utile si on lit aussi le courant ici)'},
+         'tip': 'Current range of the 2410 (useful if the current is also being read here)'},
     ] + comon_parameters_fun(is_multiaxes, axis_names=_axis_names, epsilon=_epsilon)
 
     def ini_attributes(self):

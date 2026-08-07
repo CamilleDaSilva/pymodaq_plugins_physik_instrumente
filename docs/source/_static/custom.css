@@ -1,0 +1,4 @@
+.rst-content dl:not(.docutils) dt {
+    white-space: normal !important;
+    word-wrap: break-word;
+}

@@ -35,19 +35,19 @@ class Keithley2420:
         nplc: float = 1.0,
     ):
         """
-        Initialise le Keithley en mesure de courant (mode ampèremètre).
+        Initialize the Keithley for current measurement (ammeter mode).
 
         Parameters
         ----------
         source_voltage : float
-            Tension appliquée au collecteur (0 V pour usage ampèremètre pur).
+            Voltage applied to the collector (0 V for pure ammeter use).
         compliance : float
-            Limite de courant.
+            Current limit.
         current_range : float or None
             None -> autorange
-            float -> plage fixe en ampères.
+            float -> fixed range in amperes.
         nplc : float
-            Nombre de cycles secteur par mesure (précision vs vitesse).
+            Number of power-line cycles per measurement (precision vs speed).
         """
         inst = self.instrument
 

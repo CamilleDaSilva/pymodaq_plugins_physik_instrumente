@@ -14,7 +14,9 @@ Post-processing:
     - Gaussian fit superimposed on dI/dV (can be toggled independently)
     - Averaging of several full sweeps (n_sweeps), in addition to the
       existing point-by-point averaging (n_average)
-    - CSV export of the last acquisition to a user-chosen path
+    - CSV export of the last acquisition to a user-chosen path, with all
+      computed parameters (including the Gaussian fit) written in the
+      same file
 
 Author: Camille Da Silva
 ONERA DPHY/CSE — PICOMAX-E, 2026
@@ -23,6 +25,7 @@ ONERA DPHY/CSE — PICOMAX-E, 2026
 import csv
 import time
 import numpy as np
+from datetime import datetime
 
 from qtpy.QtWidgets import QFileDialog
 
@@ -51,9 +54,8 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
              'value': 'GPIB0::24::INSTR'},
             {'title': 'Compliance (A):', 'name': 'compliance', 'type': 'float',
              'value': 0.02, 'min': 0.0, 'max': 1.05,
-             'tip': 'Le 2410 est limite a 22W max. A 700V, le courant max '
-                    'utilisable est ~21-31 mA -> ne pas depasser ~0.03 A '
-                    'en haute tension.'},
+             'tip': 'The 2410 is limited to 22 W max. At 700 V, the maximum usable current '
+                    'is about 21-31 mA -> do not exceed about 0.03 A at high voltage.'},
             {'title': 'Current Range (A):', 'name': 'current_range', 'type': 'float',
              'value': 20e-3, 'min': 0.0, 'max': 1.05,
              'tip': 'Range of the 2410 (if its own current is also read). ~20 mA for a resistor test'},
@@ -64,7 +66,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
 
         {'title': 'Keithley 2420 (Collector)', 'name': 'k2420_settings', 'type': 'group', 'children': [
             {'title': 'VISA Address:', 'name': 'visa_address', 'type': 'str',
-             'value': 'GPIB1::25::INSTR',
+             'value': 'GPIB1::23::INSTR',
              'tip': 'VISA address of the Keithley 2420 (collector current)'},
             {'title': 'Source Voltage (V):', 'name': 'source_voltage', 'type': 'float',
              'value': 0.0, 'min': -60.0, 'max': 60.0,
@@ -79,6 +81,12 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
              'value': 1.0, 'min': 0.01, 'max': 10.0},
         ]},
 
+        {'title': 'Beam Settings', 'name': 'beam_settings', 'type': 'group', 'children': [
+            {'title': 'Beam energy (eV):', 'name': 'beam_energy', 'type': 'float',
+             'value': 400.0, 'min': 0.0,
+             'tip': 'Ion beam energy [eV] — used in the exported CSV filename'},
+        ]},
+
         {'title': 'Scan Settings', 'name': 'scan_settings', 'type': 'group', 'children': [
             {'title': 'Voltage Min (V):', 'name': 'volt_min', 'type': 'float',
              'value': 500.0, 'min': -1100.0, 'max': 1100.0},
@@ -89,7 +97,8 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
             {'title': 'N Average:', 'name': 'n_average', 'type': 'int',
              'value': 5, 'min': 1, 'max': 100,
              'tip': 'Number of samples averaged per voltage point (in-place temporal '
-                    'averaging, at each step of the sweep).'},
+                    'averaging, at each step of the sweep) — only the final averaged '
+                    'value is kept and shown/exported.'},
             {'title': 'N Sweeps:', 'name': 'n_sweeps', 'type': 'int',
              'value': 1, 'min': 1, 'max': 100,
              'tip': 'Number of FULL sweeps to repeat and average. Complementary to '
@@ -135,20 +144,27 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
             {'title': 'Weighted sigma [V]:', 'name': 'stat_std', 'type': 'float',
              'value': float('nan'), 'readonly': True,
              'tip': 'Standard deviation of the energy distribution, weighted by |dI/dV|.'},
+            {'title': 'Gaussian fit amplitude:', 'name': 'stat_amplitude_fit', 'type': 'float',
+             'value': float('nan'), 'readonly': True,
+             'tip': 'Amplitude from the Gaussian fit.'},
             {'title': 'Gaussian fit mu [V]:', 'name': 'stat_mean_fit', 'type': 'float',
              'value': float('nan'), 'readonly': True,
              'tip': 'Peak position from the Gaussian fit.'},
             {'title': 'Gaussian fit sigma [V]:', 'name': 'stat_sigma_fit', 'type': 'float',
              'value': float('nan'), 'readonly': True,
              'tip': 'Peak width from the Gaussian fit.'},
+            {'title': 'Gaussian fit offset:', 'name': 'stat_offset_fit', 'type': 'float',
+             'value': float('nan'), 'readonly': True,
+             'tip': 'Offset from the Gaussian fit.'},
         ]},
 
         {'title': 'Export', 'name': 'export_settings', 'type': 'group', 'children': [
             {'title': 'Export CSV...:', 'name': 'export_csv', 'type': 'bool',
              'value': False,
              'tip': 'Check to open a save-file dialog and export the last acquisition '
-                    '(voltage, current, dI/dV, Gaussian fit) to a CSV file. Unchecks '
-                    'itself automatically after export.'},
+                    '(voltage, current, dI/dV, Gaussian fit, and all computed '
+                    'parameters) to a single CSV file. Unchecks itself automatically '
+                    'after export.'},
             {'title': 'Last export path:', 'name': 'last_export_path', 'type': 'str',
              'value': '', 'readonly': True},
         ]},
@@ -163,6 +179,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         self._last_all_sweeps = None
         self._last_div = None
         self._last_fitted = None
+        self._last_fit_params = None  # (amplitude, mean, sigma, offset) or None
         self._data_ready = False
         self._is_grabbing = False
 
@@ -291,6 +308,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         self._last_all_sweeps = None
         self._last_div = None
         self._last_fitted = None
+        self._last_fit_params = None
 
         if not self.is_master:
             voltages = self.x_axis.get_data()
@@ -347,27 +365,36 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
 
         mean_w, std_w = weighted_mean_std(voltages, div)
 
+        fit_params = None
         if self.settings['postproc_settings', 'enable_fit']:
             params, fitted = fit_gaussian(voltages, div)
             if fitted is None:
                 fitted = np.zeros(n)
                 mean_fit, sigma_fit = float('nan'), float('nan')
             else:
-                _, mean_fit, sigma_fit, _ = params
+                amplitude_fit, mean_fit, sigma_fit, offset_fit = params
                 sigma_fit = abs(sigma_fit)
+                fit_params = (amplitude_fit, mean_fit, sigma_fit, offset_fit)
         else:
             fitted = np.zeros(n)
             mean_fit, sigma_fit = float('nan'), float('nan')
 
-        return div, fitted, mean_w, std_w, mean_fit, sigma_fit
+        return div, fitted, mean_w, std_w, mean_fit, sigma_fit, fit_params
 
-    def _update_stats_display(self, mean_w, std_w, mean_fit, sigma_fit):
+    def _update_stats_display(self, mean_w, std_w, fit_params):
         """Show the (weighted and fit) mean/std as read-only numeric fields
         directly in the Post-processing settings."""
         self.settings.child('postproc_settings', 'stat_mean').setValue(float(mean_w))
         self.settings.child('postproc_settings', 'stat_std').setValue(float(std_w))
-        self.settings.child('postproc_settings', 'stat_mean_fit').setValue(float(mean_fit))
-        self.settings.child('postproc_settings', 'stat_sigma_fit').setValue(float(sigma_fit))
+        if fit_params is not None:
+            amplitude_fit, mean_fit, sigma_fit, offset_fit = fit_params
+            self.settings.child('postproc_settings', 'stat_amplitude_fit').setValue(float(amplitude_fit))
+            self.settings.child('postproc_settings', 'stat_mean_fit').setValue(float(mean_fit))
+            self.settings.child('postproc_settings', 'stat_sigma_fit').setValue(float(sigma_fit))
+            self.settings.child('postproc_settings', 'stat_offset_fit').setValue(float(offset_fit))
+        else:
+            for name in ('stat_amplitude_fit', 'stat_mean_fit', 'stat_sigma_fit', 'stat_offset_fit'):
+                self.settings.child('postproc_settings', name).setValue(float('nan'))
 
     def _recompute_postprocessing(self):
         """
@@ -396,8 +423,10 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         ]
 
         if self.settings['postproc_settings', 'enable_derivative']:
-            div, fitted, mean_w, std_w, mean_fit, sigma_fit = self._postprocess(voltages, currents)
+            div, fitted, mean_w, std_w, mean_fit, sigma_fit, fit_params = self._postprocess(
+                voltages, currents)
             self._last_div, self._last_fitted = div, fitted
+            self._last_fit_params = fit_params
 
             data_export.append(DataFromPlugins(
                 name='dI-dV (Energy Distribution)',
@@ -414,10 +443,11 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                 status = [f'dI/dV recomputed. Distribution (weighted): <V>={mean_w:.2f} V, '
                           f'sigma={std_w:.2f} V (Gaussian fit disabled or not converged)']
 
-            self._update_stats_display(mean_w, std_w, mean_fit, sigma_fit)
+            self._update_stats_display(mean_w, std_w, fit_params)
         else:
             self._last_div = np.zeros(len(voltages))
             self._last_fitted = np.zeros(len(voltages))
+            self._last_fit_params = None
             data_export.append(DataFromPlugins(
                 name='dI-dV (Energy Distribution)',
                 data=[self._last_div, self._last_fitted],
@@ -425,7 +455,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                 labels=['dI/dV [A/V]', 'Gaussian fit'],
                 axes=[self.x_axis]
             ))
-            self._update_stats_display(float('nan'), float('nan'), float('nan'), float('nan'))
+            self._update_stats_display(float('nan'), float('nan'), None)
             status = ['Post-processing disabled ("Enable dI/dV" unchecked).']
 
         self.dte_signal.emit(DataToExport(name='RPA', data=data_export))
@@ -434,9 +464,17 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
     def _export_csv(self):
         """
         Open a save-file dialog and export the last acquisition (voltage,
-        current, dI/dV, Gaussian fit if available) to a CSV file at the
-        chosen path. Called from commit_settings when the 'Export CSV...'
-        checkbox is checked.
+        current, dI/dV, Gaussian fit if available) to a single CSV file at
+        the chosen path, with all computed parameters (including the
+        Gaussian fit) written as a header block above the data table.
+        Called from commit_settings when the 'Export CSV...' checkbox is
+        checked.
+
+        Uses ';' as the field delimiter (like the Langmuir plugin) so that
+        French-locale Excel — which uses ';' as its default CSV list
+        separator, since ',' is the decimal separator — opens the file
+        already split into columns instead of dumping everything into
+        column A.
         """
         if self._last_voltages is None or self._last_currents is None:
             self.emit_status(ThreadCommand(
@@ -445,7 +483,10 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
             ))
             return
 
-        default_name = f'RPA_export_{time.strftime("%Y%m%d_%H%M%S")}.csv'
+        now = datetime.now()
+        energy = self.settings['beam_settings', 'beam_energy']
+        default_name = f'rpa_{energy:g}eV_{now.strftime("%Y-%m-%d_%H-%M-%S")}.csv'
+
         path, _ = QFileDialog.getSaveFileName(
             None, 'Export RPA data to CSV', default_name, 'CSV files (*.csv)'
         )
@@ -460,9 +501,32 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         div = self._last_div if self._last_div is not None else np.full(n, np.nan)
         fitted = self._last_fitted if self._last_fitted is not None else np.full(n, np.nan)
 
+        if self._last_fit_params is not None:
+            amplitude_fit, mean_fit, sigma_fit, offset_fit = self._last_fit_params
+        else:
+            amplitude_fit = mean_fit = sigma_fit = offset_fit = float('nan')
+
+        mean_w = self.settings['postproc_settings', 'stat_mean']
+        std_w = self.settings['postproc_settings', 'stat_std']
+
         try:
             with open(path, 'w', newline='') as f:
-                writer = csv.writer(f)
+                writer = csv.writer(f, delimiter=';')
+
+                writer.writerow(['# RPA acquisition'])
+                writer.writerow(['# Date', now.strftime('%Y-%m-%d %H:%M:%S')])
+                writer.writerow(['# Beam energy [eV]', energy])
+                writer.writerow(['# N points', self.settings['scan_settings', 'n_points']])
+                writer.writerow(['# N average (per point)', self.settings['scan_settings', 'n_average']])
+                writer.writerow(['# N sweeps', self.settings['scan_settings', 'n_sweeps']])
+                writer.writerow(['# Weighted mean [V]', mean_w])
+                writer.writerow(['# Weighted sigma [V]', std_w])
+                writer.writerow(['# Gaussian fit amplitude', amplitude_fit])
+                writer.writerow(['# Gaussian fit mu [V]', mean_fit])
+                writer.writerow(['# Gaussian fit sigma [V]', sigma_fit])
+                writer.writerow(['# Gaussian fit offset', offset_fit])
+                writer.writerow([])
+
                 writer.writerow(['Grid Voltage [V]', 'Collector Current [A]',
                                   'dI/dV [A/V]', 'Gaussian fit [A/V]'])
                 for i in range(n):
@@ -479,7 +543,8 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
         Sweep the grid voltage (2410) and read the collector current (2420,
         averaged over n_average samples) at each voltage step, repeat the
         whole sweep n_sweeps times, then average the n_sweeps I-V curves
-        obtained.
+        obtained. Only the final averaged curve is kept/exported (not the
+        individual raw samples).
 
         dI/dV (+ fit) is computed automatically at the end of the
         acquisition. The 'Recompute post-processing' button remains useful
@@ -543,17 +608,19 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                 ),
             ]
 
-            status_msgs = [f'Acquisition complete: {n} points x {n_sweeps} sweep(s).']
+            status_msgs = [f'Acquisition complete: {n} points x {n_sweeps} sweep(s), '
+                            f'{n_avg} samples averaged per point.']
             if n_sweeps > 1:
                 status_msgs.append(
                     f'Inter-sweep noise (mean std): {np.mean(currents_std):.3e} A.'
                 )
 
             if self.settings['postproc_settings', 'enable_derivative']:
-                div, fitted, mean_w, std_w, mean_fit, sigma_fit = self._postprocess(
+                div, fitted, mean_w, std_w, mean_fit, sigma_fit, fit_params = self._postprocess(
                     voltages, currents_mean
                 )
                 self._last_div, self._last_fitted = div, fitted
+                self._last_fit_params = fit_params
                 data_export.append(DataFromPlugins(
                     name='dI-dV (Energy Distribution)',
                     data=[div, fitted],
@@ -571,10 +638,11 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                         f'Distribution (weighted): <V>={mean_w:.2f} V, sigma={std_w:.2f} V '
                         f'(Gaussian fit disabled or not converged)'
                     )
-                self._update_stats_display(mean_w, std_w, mean_fit, sigma_fit)
+                self._update_stats_display(mean_w, std_w, fit_params)
             else:
                 self._last_div = np.zeros(n)
                 self._last_fitted = np.zeros(n)
+                self._last_fit_params = None
                 data_export.append(DataFromPlugins(
                     name='dI-dV (Energy Distribution)',
                     data=[self._last_div, self._last_fitted],
@@ -582,7 +650,7 @@ class DAQ_1DViewer_Keithley2420(DAQ_Viewer_base):
                     labels=['dI/dV [A/V]', 'Gaussian fit'],
                     axes=[self.x_axis]
                 ))
-                self._update_stats_display(float('nan'), float('nan'), float('nan'), float('nan'))
+                self._update_stats_display(float('nan'), float('nan'), None)
                 status_msgs.append('Post-processing disabled ("Enable dI/dV" unchecked).')
 
             self.dte_signal.emit(DataToExport(name='RPA', data=data_export))

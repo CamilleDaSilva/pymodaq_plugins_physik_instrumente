@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Post-traitement de la courbe I-V du RPA (Retarding Potential Analyzer).
+Post-processing for the RPA I-V curve (Retarding Potential Analyzer).
 
-Fournit :
-    - derivative()        : dI/dV lissée (Savitzky-Golay)
-    - weighted_mean_std()  : moyenne / écart-type de la distribution en énergie
-    - fit_gaussian()       : ajustement gaussien de la distribution en énergie
+Provides:
+    - derivative()        : smoothed dI/dV (Savitzky-Golay)
+    - weighted_mean_std()  : mean / standard deviation of the energy distribution
+    - fit_gaussian()       : Gaussian fit of the energy distribution
 
 Author: Camille Da Silva
 ONERA DPHY/CSE — PICOMAX-E, 2026
@@ -17,46 +17,46 @@ from scipy.optimize import curve_fit
 
 
 def gaussian(x, amplitude, mean, sigma, offset):
-    """Modèle gaussien avec offset."""
+    """Gaussian model with offset."""
     return offset + amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
 
 
 def _odd(n: int) -> int:
-    """Force un entier à être impair (arrondi vers le haut)."""
+    """Force an integer to be odd (rounded up)."""
     n = int(n)
     return n if n % 2 == 1 else n + 1
 
 
 def derivative(voltages, currents, window_length: int = 9, polyorder: int = 2):
     """
-    Calcule dI/dV avec un filtre de Savitzky-Golay (lissage + dérivée en un
-    seul passage), ce qui est nettement plus robuste au bruit qu'un simple
-    np.gradient sur des données expérimentales bruitées.
+    Compute dI/dV with a Savitzky-Golay filter (smoothing + derivative in one
+    pass), which is much more robust to noise than a simple np.gradient on
+    noisy experimental data.
 
     Parameters
     ----------
-    voltages, currents : array-like, même longueur, voltages supposé
-        régulièrement échantillonné (c'est le cas pour un balayage linéaire).
+    voltages, currents : array-like, same length, voltages assumed to be
+        regularly sampled (which is the case for a linear sweep).
     window_length : int
-        Largeur de la fenêtre de lissage (sera forcée à un nombre impair).
+        Smoothing window width (will be forced to an odd number).
     polyorder : int
-        Ordre du polynôme local (doit être < window_length).
+        Local polynomial order (must be < window_length).
 
     Returns
     -------
     np.ndarray
-        dI/dV, même longueur que l'entrée.
+        dI/dV, same length as the input.
     """
     voltages = np.asarray(voltages, dtype=float)
     currents = np.asarray(currents, dtype=float)
     n = len(voltages)
 
     if n < 5:
-        # Pas assez de points pour un Savitzky-Golay fiable
+        # Not enough points for a reliable Savitzky-Golay filter
         return np.gradient(currents, voltages)
 
     wl = _odd(min(window_length, n - 1 if n % 2 == 0 else n))
-    wl = max(wl, _odd(polyorder + 2))  # wl doit être > polyorder
+    wl = max(wl, _odd(polyorder + 2))  # wl must be > polyorder
     wl = min(wl, n if n % 2 == 1 else n - 1)
 
     dv = np.mean(np.diff(voltages))
@@ -70,13 +70,13 @@ def derivative(voltages, currents, window_length: int = 9, polyorder: int = 2):
 
 def weighted_mean_std(voltages, distribution):
     """
-    Moyenne et écart-type de la distribution en énergie des ions, pondérés
-    par |distribution| (poids toujours positif, peu importe le signe de
-    dI/dV selon la convention du Keithley).
+    Mean and standard deviation of the ion energy distribution, weighted by
+    |distribution| (weights are always positive, regardless of the sign of
+    dI/dV according to the Keithley convention).
 
     Returns
     -------
-    (mean, std) : tuple de float, (nan, nan) si la distribution est nulle.
+    (mean, std) : tuple of floats, (nan, nan) if the distribution is zero.
     """
     voltages = np.asarray(voltages, dtype=float)
     weights = np.abs(np.asarray(distribution, dtype=float))
@@ -92,14 +92,14 @@ def weighted_mean_std(voltages, distribution):
 
 def fit_gaussian(voltages, distribution):
     """
-    Ajuste une gaussienne sur la distribution en énergie (typiquement
-    dI/dV ou -dI/dV selon la convention retenue).
+    Fit a Gaussian to the energy distribution (typically dI/dV or -dI/dV,
+    depending on the convention used).
 
     Returns
     -------
     (params, fitted_curve)
-        params = (amplitude, mean, sigma, offset), ou (None, None) en cas
-        d'échec du fit (ex : distribution trop bruitée / plate).
+        params = (amplitude, mean, sigma, offset), or (None, None) if the fit
+        fails (for example if the distribution is too noisy or flat).
     """
     voltages = np.asarray(voltages, dtype=float)
     distribution = np.asarray(distribution, dtype=float)

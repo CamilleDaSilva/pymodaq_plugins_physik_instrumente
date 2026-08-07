@@ -8,6 +8,7 @@ Includes Langmuir post-processing (linear regression, I0 calculation) and CSV ex
 import csv
 import numpy as np
 import statsmodels.api as sm
+from datetime import datetime
 
 from qtpy.QtWidgets import QFileDialog
 
@@ -107,6 +108,10 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             {'title': 'I at Vf (mA):', 'name': 'i_intersection_result', 'type': 'float',
              'value': 0.0, 'readonly': True,
              'tip': 'Current at the floating potential Vf [mA]'},
+            {'title': 'J at Vf (mA/cm²):', 'name': 'j_intersection_result', 'type': 'float',
+             'value': 0.0, 'readonly': True,
+             'tip': 'Current density J at the floating potential Vf: I(Vf) divided by the '
+                    'probe surface area [mA/cm²]'},
             {'title': 'Electron temperature Te (eV):', 'name': 'te_result', 'type': 'float',
              'value': 0.0, 'readonly': True,
              'tip': 'Electron temperature from the semilog slope of the transition region [eV]'},
@@ -261,28 +266,67 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             self._is_grabbing = False
 
     def export_csv_data(self):
-        """Save the current I-V curve to a CSV file."""
+        """Save the current I-V curve to a CSV file, chosen by the user,
+        with all computed Langmuir parameters written as a header block
+        above the voltage/current data table (single file, as requested)."""
         print("export_csv_data called")
         if not self._data_ready or self._last_voltages is None or self._last_currents is None:
             self.emit_status(ThreadCommand('Update_Status',
                                            ['No completed acquisition available. Snap (1) first.']))
             return
 
+        now = datetime.now()
+        energy = self.settings['langmuir_settings', 'energie_faisceau']
+        default_name = (f'langmuir_{energy:g}eV_'
+                         f'{now.strftime("%Y-%m-%d_%H-%M-%S")}.csv')
+
         filepath, _ = QFileDialog.getSaveFileName(
-            None, 'Export CSV', 'IV_curve.csv', 'CSV files (*.csv)')
+            None, 'Export CSV', default_name, 'CSV files (*.csv)')
 
         if not filepath:
             print("export_csv_data: cancelled by user (no path chosen)")
             return
 
-        with open(filepath, 'w', newline='') as f:
-            writer = csv.writer(f, delimiter=';')
-            writer.writerow(['Voltage[V]', 'Current[A]'])
-            for voltage, current in zip(self._last_voltages, self._last_currents):
-                writer.writerow([voltage, current])
+        try:
+            with open(filepath, 'w', newline='') as f:
+                writer = csv.writer(f, delimiter=';')
 
-        print(f"export_csv_data: file written to {filepath}")
-        self.emit_status(ThreadCommand('Update_Status', [f'CSV exported: {filepath}']))
+                writer.writerow(['# Langmuir probe acquisition'])
+                writer.writerow(['# Date', now.strftime('%Y-%m-%d %H:%M:%S')])
+                writer.writerow(['# Beam energy [eV]', energy])
+                writer.writerow(['# Probe surface [cm2]',
+                                  self.settings['langmuir_settings', 'surface_sonde']])
+                writer.writerow(['# Probe number',
+                                  self.settings['langmuir_settings', 'numero_sonde']])
+                writer.writerow(['# Vmax ionic regression [V]',
+                                  self.settings['postproc_settings', 'vmax_regression']])
+                writer.writerow(['# Vmin electron saturation [V]',
+                                  self.settings['postproc_settings', 'vmin_saturation']])
+                writer.writerow(['# V transition min (calc) [V]',
+                                  self.settings['postproc_settings', 'vmin_trans_calc']])
+                writer.writerow(['# V transition max (calc) [V]',
+                                  self.settings['postproc_settings', 'vmax_trans_calc']])
+                writer.writerow(['# Isat electron [mA]',
+                                  self.settings['postproc_settings', 'isat_electron_result']])
+                writer.writerow(['# Vf floating potential [V]',
+                                  self.settings['postproc_settings', 'vf_result']])
+                writer.writerow(['# I at Vf [mA]',
+                                  self.settings['postproc_settings', 'i_intersection_result']])
+                writer.writerow(['# J at Vf [mA/cm2]',
+                                  self.settings['postproc_settings', 'j_intersection_result']])
+                writer.writerow(['# Electron temperature Te [eV]',
+                                  self.settings['postproc_settings', 'te_result']])
+                writer.writerow([])
+
+                writer.writerow(['Voltage[V]', 'Current[A]'])
+                for voltage, current in zip(self._last_voltages, self._last_currents):
+                    writer.writerow([voltage, current])
+
+            print(f"export_csv_data: file written to {filepath}")
+            self.emit_status(ThreadCommand('Update_Status', [f'CSV exported: {filepath}']))
+        except Exception as e:
+            print(f"EXCEPTION in export_csv_data (write): {e}")
+            self.emit_status(ThreadCommand('Update_Status', [f'Export error: {e}']))
 
     def compute_transition_bounds(self, voltages, currents, threshold_frac):
         """Determine the transition branch bounds by thresholding the peak of
@@ -327,7 +371,7 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
     def run_langmuir_regression(self):
         """Compute ionic branch regression, electron saturation, transition branch,
         floating potential Vf (intersection of ionic and transition regressions),
-        and electron temperature Te."""
+        current density J at Vf, and electron temperature Te."""
         print("run_langmuir_regression called")
         print(f"_data_ready: {self._data_ready}")
         if not self._data_ready or self._last_voltages is None or self._last_currents is None:
@@ -395,6 +439,7 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
 
         vf = None
         current_at_vf_ma = None
+        j_at_vf_ma_cm2 = None
         slope_transition = None
         intercept_transition = None
 
@@ -421,6 +466,16 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
                     self.settings.child('postproc_settings', 'vf_result').setValue(round(vf, 4))
                     self.settings.child('postproc_settings', 'i_intersection_result').setValue(
                         round(current_at_vf_ma, 4))
+
+                    # ── Current density J at Vf = I(Vf) / probe surface ──────
+                    surface_sonde = self.settings['langmuir_settings', 'surface_sonde']
+                    if surface_sonde > 0:
+                        j_at_vf_ma_cm2 = current_at_vf_ma / surface_sonde
+                        self.settings.child('postproc_settings', 'j_intersection_result').setValue(
+                            round(j_at_vf_ma_cm2, 4))
+                    else:
+                        self.emit_status(ThreadCommand('Update_Status',
+                            ['Probe surface is zero: J at Vf cannot be computed.']))
                 else:
                     self.emit_status(ThreadCommand('Update_Status',
                         ['Ionic and transition slopes are equal (e.g. resistive load): '
@@ -494,6 +549,8 @@ class DAQ_1DViewer_Keithley2410(DAQ_Viewer_base):
             status_parts.append(f'Vf = {vf:.3f} V')
         if current_at_vf_ma is not None:
             status_parts.append(f'I at Vf = {current_at_vf_ma:.3f} mA')
+        if j_at_vf_ma_cm2 is not None:
+            status_parts.append(f'J at Vf = {j_at_vf_ma_cm2:.3f} mA/cm²')
         if te_ev is not None:
             status_parts.append(f'Te = {te_ev:.3f} eV')
 
